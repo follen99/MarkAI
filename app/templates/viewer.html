@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ document['title'] }} · MarkAI{% endblock %}
+
+{% block body %}
+<div class="viewer-toolbar">
+  <div>
+    <strong>{{ document['title'] }}</strong>
+    <span class="doc-type-badge" style="margin-left:8px;">{{ document['doc_type'] }}</span>
+  </div>
+  <div class="hint" id="sync-hint">
+    {% if document['source_folder'] %}
+      Synced with <code>{{ document['source_folder'] }}</code>
+      <button class="btn secondary small" id="refresh-btn" type="button">Refresh</button>
+    {% else %}
+      No source folder set — notes are only stored in MarkAI.
+      <a href="{{ url_for('documents.library') }}">Set one from the library</a>
+    {% endif %}
+  </div>
+  <div id="pdf-controls" style="display:none;gap:6px;align-items:center;">
+    <button class="btn secondary small" id="zoom-out">-</button>
+    <span class="hint" id="zoom-level">100%</span>
+    <button class="btn secondary small" id="zoom-in">+</button>
+  </div>
+</div>
+
+<div class="viewer-shell">
+  <div class="sidebar">
+    <h3>Chapters</h3>
+    <ul class="outline-list" id="outline-list"><li class="hint">Loading…</li></ul>
+    <h3>Notes</h3>
+    <div id="note-list"><div class="hint">No notes yet.</div></div>
+  </div>
+  <div class="viewer-main" id="viewer-main">
+    <div class="doc-pane" id="doc-pane" data-doc-type="{{ document['doc_type'] }}">
+      <div class="empty-state">Loading document…</div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  window.MARKAI = {
+    documentId: {{ document['id'] }},
+    docType: {{ document['doc_type']|tojson }},
+    hasSourceFolder: {{ (document['source_folder'] is not none)|tojson }},
+    contentUrl: {{ url_for('documents.content', document_id=document['id'])|tojson }},
+    notesUrl: {{ url_for('notes.list_notes', document_id=document['id'])|tojson }},
+    syncStatusUrl: {{ url_for('notes.sync_status', document_id=document['id'])|tojson }},
+  };
+</script>
+{% if document['doc_type'] == 'pdf' %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+{% endif %}
+<script src="{{ url_for('static', filename='js/sync_poll.js') }}"></script>
+<script src="{{ url_for('static', filename='js/viewer.js') }}"></script>
+{% endblock %}

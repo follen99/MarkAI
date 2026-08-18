@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Log in · MarkAI{% endblock %}
+{% block content %}
+<div class="auth-page">
+  <div class="card">
+    <h1>Welcome back</h1>
+    <p class="subtitle">Log in to open your documents.</p>
+    <form method="post">
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" required autofocus>
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" required>
+      <button class="btn" type="submit" style="width:100%;justify-content:center;">Log in</button>
+    </form>
+    <p style="margin-top:16px;font-size:13.5px;color:var(--text-muted);">
+      No account yet? <a href="{{ url_for('auth.register') }}">Create one</a>
+    </p>
+  </div>
+</div>
+{% endblock %}

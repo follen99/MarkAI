@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}AI providers · MarkAI{% endblock %}
+{% block content %}
+<h1>AI providers</h1>
+<p class="subtitle">Configure providers for the upcoming "Resolve with AI" feature.</p>
+
+<div class="banner">
+  <strong>Coming soon —</strong>
+  <span>providers saved here are stored for later use. Resolving notes in-app isn't implemented yet;
+  for now, export notes to a source folder and point an external AI coding agent at the exported JSON.</span>
+</div>
+
+<div class="provider-list">
+  {% for p in providers %}
+  <div class="provider-row" data-provider-id="{{ p['id'] }}">
+    <div>
+      <strong>{{ p['name'] }}</strong>
+      <span class="kind-badge">{{ p['kind'] }}</span>
+      {% if p['model'] %}<span class="doc-meta">&middot; {{ p['model'] }}</span>{% endif %}
+    </div>
+    <button class="btn danger small" onclick="deleteProvider({{ p['id'] }}, this)">Remove</button>
+  </div>
+  {% else %}
+  <div class="empty-state">No providers configured yet.</div>
+  {% endfor %}
+</div>
+
+<div class="card" style="max-width:480px;">
+  <h2>Add a provider</h2>
+  <form method="post" action="{{ url_for('settings.create_ai_provider') }}">
+    <label for="name">Name</label>
+    <input type="text" id="name" name="name" placeholder="e.g. Claude API, Local Ollama" required>
+
+    <label for="kind">Kind</label>
+    <select id="kind" name="kind" required>
+      <option value="api">Hosted API</option>
+      <option value="local">Local (e.g. Ollama)</option>
+    </select>
+
+    <label for="base_url">Base URL (optional)</label>
+    <input type="text" id="base_url" name="base_url" placeholder="https://api.example.com or http://localhost:11434">
+
+    <label for="model">Model (optional)</label>
+    <input type="text" id="model" name="model" placeholder="e.g. claude-sonnet-5, llama3">
+
+    <label for="api_key">API key (optional, stored as plain text for now)</label>
+    <input type="text" id="api_key" name="api_key">
+
+    <button class="btn" type="submit">Save provider</button>
+  </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function deleteProvider(id, btn) {
+  if (!confirm("Remove this provider?")) return;
+  await fetch(`/settings/ai-providers/${id}`, {method: "DELETE"});
+  btn.closest(".provider-row").remove();
+}
+</script>
+{% endblock %}

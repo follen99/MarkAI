@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Library · MarkAI{% endblock %}
+{% block content %}
+<h1>Your documents</h1>
+<p class="subtitle">Upload a .md, .pdf or .docx file to start annotating it.</p>
+
+<div class="card">
+  <form method="post" action="{{ url_for('documents.upload') }}" enctype="multipart/form-data">
+    <div class="upload-row">
+      <div class="field">
+        <label for="file">File (.md, .pdf, .docx)</label>
+        <input type="file" id="file" name="file" accept=".md,.markdown,.pdf,.docx" required>
+      </div>
+      <div class="field">
+        <label for="title">Title (optional)</label>
+        <input type="text" id="title" name="title" placeholder="Defaults to file name">
+      </div>
+      <button class="btn" type="submit">Upload</button>
+    </div>
+  </form>
+</div>
+
+{% if documents %}
+<div class="doc-grid">
+  {% for doc in documents %}
+  <div class="doc-card" data-doc-id="{{ doc['id'] }}">
+    <span class="doc-type-badge">{{ doc['doc_type'] }}</span>
+    <div class="doc-title">{{ doc['title'] }}</div>
+    <div class="doc-meta">
+      {% if doc['source_folder'] %}Source folder linked{% else %}No source folder{% endif %}
+      &middot; added {{ doc['created_at'] }}
+    </div>
+    <div class="doc-actions">
+      <a class="btn small" href="{{ url_for('documents.view', document_id=doc['id']) }}">Open</a>
+      <button class="btn secondary small" onclick="renameDoc({{ doc['id'] }}, {{ doc['title']|tojson }})">Rename</button>
+      <button class="btn secondary small" onclick="setSourceFolder({{ doc['id'] }}, {{ (doc['source_folder'] or '')|tojson }})">Source folder</button>
+      <button class="btn danger small" onclick="deleteDoc({{ doc['id'] }}, this)">Delete</button>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">No documents yet. Upload one above to get started.</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function renameDoc(id, currentTitle) {
+  const title = prompt("New title:", currentTitle);
+  if (!title) return;
+  await fetch(`/documents/${id}`, {
+    method: "PATCH",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({title}),
+  });
+  location.reload();
+}
+
+async function setSourceFolder(id, current) {
+  const folder = prompt(
+    "Source folder path (used to export notes.json / notes_status.json for an AI agent to read):",
+    current
+  );
+  if (folder === null) return;
+  const res = await fetch(`/documents/${id}`, {
+    method: "PATCH",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({source_folder: folder}),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    alert(data.error || "Could not set source folder.");
+    return;
+  }
+  location.reload();
+}
+
+async function deleteDoc(id, btn) {
+  if (!confirm("Delete this document and all its notes?")) return;
+  await fetch(`/documents/${id}`, {method: "DELETE"});
+  btn.closest(".doc-card").remove();
+}
+</script>
+{% endblock %}
