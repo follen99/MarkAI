@@ -16,23 +16,33 @@
       <a href="{{ url_for('documents.library') }}">Set one from the library</a>
     {% endif %}
   </div>
-  <div id="pdf-controls" style="display:none;gap:6px;align-items:center;">
-    <button class="btn secondary small" id="zoom-out">-</button>
-    <span class="hint" id="zoom-level">100%</span>
-    <button class="btn secondary small" id="zoom-in">+</button>
+  <div class="hint">Click or select text to add a note · hold <kbd>Ctrl</kbd> to click links normally</div>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <a class="btn secondary small" href="{{ url_for('notes.export_notes_download', document_id=document['id']) }}" download>Download notes (JSON)</a>
+    <div id="pdf-controls" style="display:none;gap:6px;align-items:center;">
+      <button class="btn secondary small" id="zoom-out">-</button>
+      <span class="hint" id="zoom-level">100%</span>
+      <button class="btn secondary small" id="zoom-in">+</button>
+    </div>
   </div>
 </div>
 
 <div class="viewer-shell">
-  <div class="sidebar">
-    <h3>Chapters</h3>
-    <ul class="outline-list" id="outline-list"><li class="hint">Loading…</li></ul>
-    <h3>Notes</h3>
-    <div id="note-list"><div class="hint">No notes yet.</div></div>
+  <div class="sidebar-panel left" id="outline-panel">
+    <button class="sidebar-toggle" type="button" data-toggle="outline-panel" title="Collapse chapters">Chapters «</button>
+    <div class="sidebar-inner">
+      <ul class="outline-list" id="outline-list"><li class="hint">Loading…</li></ul>
+    </div>
   </div>
   <div class="viewer-main" id="viewer-main">
     <div class="doc-pane" id="doc-pane" data-doc-type="{{ document['doc_type'] }}">
       <div class="empty-state">Loading document…</div>
+    </div>
+  </div>
+  <div class="sidebar-panel right" id="notes-panel">
+    <button class="sidebar-toggle" type="button" data-toggle="notes-panel" title="Collapse notes">» Notes</button>
+    <div class="sidebar-inner">
+      <div id="note-list"><div class="hint"><span class="spinner"></span>Loading notes…</div></div>
     </div>
   </div>
 </div>

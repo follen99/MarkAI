@@ -1,11 +1,11 @@
 import json
 import uuid
 
-from flask import Blueprint, abort, g, jsonify, request
+from flask import Blueprint, Response, abort, g, jsonify, request
 
 from .auth import login_required
 from .db import get_db
-from .sync import check_and_pull_status, export_notes
+from .sync import build_detailed_export, check_and_pull_status, export_filename, export_notes
 
 bp = Blueprint("notes", __name__)
 
@@ -130,6 +130,55 @@ def delete_note(note_id):
     db.commit()
     export_notes(db, doc)
     return jsonify({"ok": True})
+
+
+@bp.route("/documents/<int:document_id>/notes/bulk", methods=("POST",))
+@login_required
+def bulk_update_notes(document_id):
+    db = get_db()
+    doc = _get_document(document_id)
+    check_and_pull_status(db, doc)
+
+    payload = request.get_json(silent=True) or {}
+    ids = [i for i in (payload.get("ids") or []) if isinstance(i, str)]
+    action = payload.get("action")
+    if not ids or action not in ("done", "pending", "delete"):
+        return jsonify({"error": "ids and a valid action are required"}), 400
+
+    placeholders = ",".join("?" for _ in ids)
+    if action == "delete":
+        db.execute(
+            f"DELETE FROM notes WHERE id IN ({placeholders}) AND document_id = ? AND user_id = ?",
+            (*ids, document_id, g.user["id"]),
+        )
+    else:
+        db.execute(
+            f"UPDATE notes SET status = ?, updated_at = datetime('now') "
+            f"WHERE id IN ({placeholders}) AND document_id = ? AND user_id = ?",
+            (action, *ids, document_id, g.user["id"]),
+        )
+    db.commit()
+
+    doc = _get_document(document_id)
+    export_notes(db, doc)
+
+    notes = db.execute(
+        "SELECT * FROM notes WHERE document_id = ? ORDER BY created_at", (document_id,)
+    ).fetchall()
+    return jsonify({"notes": [_serialize_note(n) for n in notes]})
+
+
+@bp.route("/documents/<int:document_id>/notes/export", methods=("GET",))
+@login_required
+def export_notes_download(document_id):
+    db = get_db()
+    doc = _get_document(document_id)
+    check_and_pull_status(db, doc)
+    payload = build_detailed_export(db, doc)
+    body = json.dumps(payload, indent=2, ensure_ascii=False)
+    response = Response(body, mimetype="application/json")
+    response.headers["Content-Disposition"] = f'attachment; filename="{export_filename(doc)}"'
+    return response
 
 
 @bp.route("/documents/<int:document_id>/sync-status", methods=("GET",))

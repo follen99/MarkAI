@@ -1,7 +1,6 @@
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
 
 from markdown.extensions.toc import slugify
 
@@ -36,39 +35,68 @@ def _atomic_write_json(path, data):
         raise
 
 
+def export_filename(document) -> str:
+    return f"{_slug_for(document)}.notes.json"
+
+
+def _words(text, n, from_end=False):
+    words = (text or "").split()
+    return " ".join(words[-n:] if from_end else words[:n])
+
+
+def _location_and_quote(position):
+    """Reduce a note's (verbose, UI-oriented) position into the two things an
+    AI agent actually needs to find the spot in a source file: the full
+    section/subsection path, and a short quote. Kept deliberately terse so a
+    document full of notes doesn't blow up the context window."""
+    heading_path = position.get("heading_path") or []
+    location = " / ".join(heading_path) if heading_path else (position.get("chapter") or "")
+
+    quote = position.get("quote")
+    if not quote:
+        quote = position.get("selected_text") or ""
+    if not quote:
+        before = _words(position.get("context_before"), 4, from_end=True)
+        anchor = position.get("anchor_text") or ""
+        after = _words(position.get("context_after"), 4)
+        quote = " ".join(part for part in (before, anchor, after) if part)
+
+    return location, quote.strip()
+
+
+def build_detailed_export(db, document):
+    notes = db.execute(
+        "SELECT * FROM notes WHERE document_id = ? ORDER BY created_at",
+        (document["id"],),
+    ).fetchall()
+    result = []
+    for note in notes:
+        location, quote = _location_and_quote(json.loads(note["position_json"]))
+        result.append(
+            {
+                "id": note["id"],
+                "status": note["status"],
+                "note": note["note_text"],
+                "location": location,
+                "quote": quote,
+            }
+        )
+    return {"document": document["title"], "notes": result}
+
+
 def export_notes(db, document):
     """Write the full notes file and the short status file into the document's
     source folder, if one is configured. Called after any note mutation."""
     if not document["source_folder"]:
         return
 
-    notes = db.execute(
-        "SELECT * FROM notes WHERE document_id = ? ORDER BY created_at",
-        (document["id"],),
-    ).fetchall()
-
-    detailed = {
-        "document_title": document["title"],
-        "document_type": document["doc_type"],
-        "exported_at": datetime.now(timezone.utc).isoformat(),
-        "notes": [
-            {
-                "id": note["id"],
-                "status": note["status"],
-                "note": note["note_text"],
-                "position": json.loads(note["position_json"]),
-                "created_at": note["created_at"],
-                "updated_at": note["updated_at"],
-            }
-            for note in notes
-        ],
-    }
+    detailed = build_detailed_export(db, document)
     status_list = {
         "instructions": (
             "For each note you have applied to the source, set its status to "
             "'done'. MarkAI reads this file back and reflects the status in its UI."
         ),
-        "notes": [{"id": note["id"], "status": note["status"]} for note in notes],
+        "notes": [{"id": n["id"], "status": n["status"]} for n in detailed["notes"]],
     }
 
     os.makedirs(document["source_folder"], exist_ok=True)
