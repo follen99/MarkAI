@@ -16,6 +16,7 @@
   let lastHandledSelectionKey = null;
   const selectedNoteIds = new Set();
   const usedMarkerTops = new WeakMap();
+  let searchState = null; // { query, matches: [...], activeIndex } — see "Find in document" below
 
   function escapeHtml(str) {
     const div = document.createElement("div");
@@ -1440,6 +1441,7 @@
     activeHighlight = null;
     const position = activeHighlightPosition;
     if (position) highlightPosition(position, { scroll: false });
+    repaintSearchBoxes(); // the search overlay boxes were just wiped too
   }
 
   function zoomPercent() {
@@ -2045,6 +2047,248 @@
 
   }
 
+  // ---------- Find in document ----------
+  //
+  // Ctrl/Cmd+F opens this instead of the browser's own find bar. The browser's
+  // native find is the wrong tool here on both doc types: for md/docx it can't
+  // tell MarkAI which match is "current" (so there's no way to place a note-like
+  // scroll/marker), and for PDF it only ever sees whatever pages have already
+  // been painted into the DOM's text layer — which, thanks to the lazy raster
+  // pass, is every page (renderAllPdfPages awaits every page's text layer
+  // before initPdf returns), but the browser has no notion of "page 47 of a
+  // scroll container" to jump to, so a match off-screen just silently fails to
+  // scroll anywhere.
+  //
+  // md/docx matches are painted as real <mark> wraps (same technique as note
+  // highlighting via rangeAtOffset + surroundContents). PDF matches reuse the
+  // exact same anchor -> Range -> overlay-box pipeline notes use
+  // (buildPageFlatIndex + pdfRangeFromAnchor + paintRangeBoxes), which is what
+  // makes them survive zoom for free: repaintPdfHighlight already wipes and
+  // reboots every page's highlight layer on zoom, so it just needs to call
+  // repaintSearchBoxes() too rather than anything new being wired up per zoom step.
+
+  let searchDebounceTimer = null;
+
+  function unwrapSearchMarks() {
+    docPane.querySelectorAll("mark.search-hit, mark.search-hit-current").forEach((mark) => {
+      const parent = mark.parentNode;
+      if (!parent) return;
+      while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+      parent.removeChild(mark);
+      parent.normalize(); // re-merge the text nodes the wrap split, so offsets
+    }); // computed on the next search stay simple to reason about
+  }
+
+  function clearSearchBoxes() {
+    docPane
+      .querySelectorAll(".pdf-highlight-box.search, .pdf-highlight-box.search-current")
+      .forEach((box) => box.remove());
+  }
+
+  function clearSearchHighlights() {
+    unwrapSearchMarks();
+    clearSearchBoxes();
+  }
+
+  function searchBlocks(needle) {
+    const matches = [];
+    docPane.querySelectorAll(".doc-block").forEach((block) => {
+      const lower = block.textContent.toLowerCase();
+      let from = 0;
+      let idx;
+      while ((idx = lower.indexOf(needle, from)) !== -1) {
+        matches.push({ type: "block", block, start: idx, length: needle.length });
+        from = idx + needle.length;
+      }
+    });
+    return matches;
+  }
+
+  function searchPdfPages(needle) {
+    const matches = [];
+    docPane.querySelectorAll(".pdf-page-wrap").forEach((wrap) => {
+      const { text, pos } = buildPageFlatIndex(wrap);
+      const lower = text.toLowerCase();
+      let from = 0;
+      let idx;
+      while ((idx = lower.indexOf(needle, from)) !== -1) {
+        const startPos = pos[idx];
+        const endPos = pos[Math.min(idx + needle.length - 1, pos.length - 1)];
+        if (startPos && endPos) {
+          matches.push({
+            type: "pdf",
+            wrap,
+            anchor: { startIdx: startPos.idx, startOff: startPos.off, endIdx: endPos.idx, endOff: endPos.off + 1 },
+          });
+        }
+        from = idx + needle.length;
+      }
+    });
+    return matches;
+  }
+
+  // Paints every match at once, current one distinguished by a second class.
+  // Called after every (re)search and after a PDF zoom repaint, since that
+  // wipes the highlight layer the boxes lived in.
+  function paintSearchHighlights() {
+    clearSearchHighlights();
+    if (!searchState) return;
+    searchState.matches.forEach((match, i) => {
+      const current = i === searchState.activeIndex;
+      if (match.type === "block") {
+        const range = rangeAtOffset(match.block, match.start, match.start + match.length);
+        if (!range) return;
+        try {
+          const mark = document.createElement("mark");
+          mark.className = current ? "search-hit-current" : "search-hit";
+          range.surroundContents(mark);
+        } catch (err) {
+          /* range crosses an element boundary (e.g. a note <mark>) — skip painting, still counted */
+        }
+      } else {
+        const range = pdfRangeFromAnchor(match.wrap, match.anchor);
+        if (!range) return;
+        const layer = match.wrap.querySelector(".pdf-highlight-layer");
+        paintRangeBoxes(range, match.wrap, layer, current ? "pdf-highlight-box search-current" : "pdf-highlight-box search");
+      }
+    });
+  }
+
+  function repaintSearchBoxes() {
+    if (!searchState || !searchState.matches.length) return;
+    clearSearchBoxes();
+    searchState.matches.forEach((match, i) => {
+      if (match.type !== "pdf") return;
+      const range = pdfRangeFromAnchor(match.wrap, match.anchor);
+      if (!range) return;
+      const layer = match.wrap.querySelector(".pdf-highlight-layer");
+      const current = i === searchState.activeIndex;
+      paintRangeBoxes(range, match.wrap, layer, current ? "pdf-highlight-box search-current" : "pdf-highlight-box search");
+    });
+  }
+
+  function scrollToSearchMatch(match) {
+    if (match.type === "block") {
+      scrollIntoViewerCenter(match.block);
+      return;
+    }
+    ensurePageTextScaled(match.wrap);
+    const range = pdfRangeFromAnchor(match.wrap, match.anchor);
+    scrollIntoViewerCenter(range ? range.getBoundingClientRect() : match.wrap);
+  }
+
+  function updateSearchUi() {
+    const input = document.getElementById("search-input");
+    const count = document.getElementById("search-count");
+    const prevBtn = document.getElementById("search-prev");
+    const nextBtn = document.getElementById("search-next");
+    if (!input) return;
+
+    const query = searchState ? searchState.query : "";
+    const total = searchState ? searchState.matches.length : 0;
+    count.classList.toggle("no-results", query.length > 0 && total === 0);
+    count.textContent = !query ? "" : total === 0 ? "No results" : `${searchState.activeIndex + 1}/${total}`;
+    prevBtn.disabled = total === 0;
+    nextBtn.disabled = total === 0;
+  }
+
+  function runSearch(query) {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      clearSearchHighlights();
+      searchState = null;
+      updateSearchUi();
+      return;
+    }
+    const needle = trimmed.toLowerCase();
+    const matches = cfg.docType === "pdf" ? searchPdfPages(needle) : searchBlocks(needle);
+    searchState = { query: trimmed, matches, activeIndex: matches.length ? 0 : -1 };
+    paintSearchHighlights();
+    updateSearchUi();
+    if (matches.length) scrollToSearchMatch(matches[0]);
+  }
+
+  function stepSearchMatch(direction) {
+    if (!searchState || !searchState.matches.length) return;
+    const n = searchState.matches.length;
+    searchState.activeIndex = (searchState.activeIndex + direction + n) % n;
+    paintSearchHighlights();
+    updateSearchUi();
+    scrollToSearchMatch(searchState.matches[searchState.activeIndex]);
+  }
+
+  function isSearchBarOpen() {
+    const bar = document.getElementById("search-bar");
+    return bar && !bar.hidden;
+  }
+
+  function openSearchBar() {
+    const bar = document.getElementById("search-bar");
+    const input = document.getElementById("search-input");
+    bar.hidden = false;
+    input.focus();
+    input.select();
+  }
+
+  function closeSearchBar() {
+    const bar = document.getElementById("search-bar");
+    bar.hidden = true;
+    clearSearchHighlights();
+    searchState = null;
+    document.getElementById("search-input").value = "";
+    updateSearchUi();
+  }
+
+  function initSearch() {
+    const bar = document.getElementById("search-bar");
+    const input = document.getElementById("search-input");
+    if (!bar || !input) return;
+
+    document.getElementById("search-toggle").addEventListener("click", () => {
+      if (isSearchBarOpen()) closeSearchBar();
+      else openSearchBar();
+    });
+
+    input.addEventListener("input", () => {
+      clearTimeout(searchDebounceTimer);
+      const query = input.value;
+      // A full-document scan on every keystroke is wasted work on a long PDF —
+      // per-page flat indexes are cached, but re-painting hundreds of marks
+      // isn't free either, so debounce like the zoom raster pass does.
+      searchDebounceTimer = setTimeout(() => runSearch(query), 150);
+    });
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        stepSearchMatch(e.shiftKey ? -1 : 1);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        closeSearchBar();
+      }
+    });
+
+    document.getElementById("search-next").addEventListener("click", () => stepSearchMatch(1));
+    document.getElementById("search-prev").addEventListener("click", () => stepSearchMatch(-1));
+    document.getElementById("search-close").addEventListener("click", closeSearchBar);
+
+    // Global override: Ctrl/Cmd+F always opens this bar instead of the
+    // browser's native find, no matter what has focus.
+    document.addEventListener("keydown", (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        if (isSearchBarOpen()) {
+          input.focus();
+          input.select();
+        } else {
+          openSearchBar();
+        }
+      } else if (e.key === "Escape" && isSearchBarOpen() && document.activeElement !== input) {
+        closeSearchBar();
+      }
+    });
+  }
+
   // ---------- Export ----------
 
   // Two shapes are useful and they are not interchangeable, so ask rather than
@@ -2117,6 +2361,7 @@
     if (exportBtn) exportBtn.addEventListener("click", openExportDialog);
     const collapseBtn = document.getElementById("outline-collapse-all");
     if (collapseBtn) collapseBtn.addEventListener("click", collapseAllOutline);
+    initSearch();
 
     if (cfg.docType === "pdf") {
       await initPdf();

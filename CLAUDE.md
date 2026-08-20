@@ -60,7 +60,7 @@ markai/
   static/css/app.css  hand-written, CSS custom properties, light+dark via prefers-color-scheme
   static/vendor/pdfjs/  pdf.min.js + pdf.worker.min.js, vendored (NOT a CDN — see below)
   static/js/
-    viewer.js          the big one — rendering, note CRUD, highlighting, PDF zoom/handling (~2000 lines)
+    viewer.js          the big one — rendering, note CRUD, highlighting, search, PDF zoom/handling (~2400 lines)
     sync_poll.js        polls /documents/<id>/sync-status every 5s + wires the Refresh button
 data/                 gitignored: dev-only data dir (app.db, uploads/, secret_key)
 ```
@@ -340,6 +340,19 @@ used to live there), `POST /notes/<id>/resolve-ai` → always 501, not implement
   only toggled done/pending state on markers that already existed — a note created by an external
   agent while the document was open never got a marker until the page was reloaded.
 
+## Find in document ("---------- Find in document ----------" in `viewer.js`)
+
+Ctrl/Cmd+F opens MarkAI's own find bar instead of the browser's native one (`document.addEventListener("keydown", ...)` in `initSearch`, `e.preventDefault()` unconditionally on that combo). This is a deliberate override, not just an addition — the browser's own find is the wrong tool on both doc types: for md/docx it has no notion of "current match" to hang a scroll/marker off; for PDF, once `char_base:"span"` anchors and note markers exist, having two independent, uncoordinated "highlight the text" mechanisms (native find's own highlight, MarkAI's overlay boxes) would be actively confusing, and the browser's find can't jump across the app's own scroll container the way `scrollIntoViewerCenter` does.
+
+Both doc types reuse machinery that already existed for notes rather than inventing a second highlighting path:
+- **md/docx**: matches come from a plain per-block `textContent.indexOf` scan (`searchBlocks`), painted as real `<mark class="search-hit"|"search-hit-current">` wraps via the same `rangeAtOffset` + `Range.surroundContents` technique `highlightBlockPosition` uses for notes. Closing search (or re-running it) unwraps every mark and calls `parent.normalize()`, which is what keeps repeated searches from fragmenting a block's text nodes into an ever-growing pile — verified by checking a searched-then-closed block's `innerHTML` comes back byte-identical to before, with a single text node.
+- **pdf**: matches come from `buildPageFlatIndex` (the same whitespace-normalized per-page flat index `locatePdfAnchorByText` already builds and caches on `wrap.__mk.flatIndex` for the note-anchor fallback), turned into `{startIdx, startOff, endIdx, endOff}` anchors the same way, then painted via the *exact* `pdfRangeFromAnchor` → `paintRangeBoxes` pipeline notes use, with `search`/`search-current` classes instead of `target`. Getting this for free is the payoff of that pipeline already handling matches spanning multiple text divs (a match can straddle a pdf.js item boundary same as a note anchor can).
+- Because `initPdf`'s `renderAllPdfPages()` awaits every page's text layer before returning, the whole document is searchable the moment the toolbar is interactive — there's no "only the pages I've scrolled past so far" gap to design around.
+- **Zoom survives for free, but only because it's wired in**: `repaintPdfHighlight` (called on every `setPdfZoom`) already wipes and rebuilds each page's `.pdf-highlight-layer` for the active note highlight; it now also calls `repaintSearchBoxes()`, which just re-runs `pdfRangeFromAnchor` on the same (zoom-independent, character-offset) anchors. Forgetting that call is the easy way to reintroduce "zooming with search open silently clears every highlight."
+- A match count ("`n/m`" or "No results") plus Enter/Shift+Enter (wrap-around) and prev/next buttons live in a small fixed-position bar (`#search-bar`, `.search-bar` in `app.css`) rather than the toolbar flow, so it stays on screen while the match list is being stepped through mid-scroll. Input is debounced 150ms (`searchDebounceTimer`) — cheap per keystroke thanks to the cached flat index, but repainting hundreds of marks on every character on a long document isn't.
+
+**Known environment limitation applies here too**: verifying PDF search visually needs a real browser tab for the same `page.render()`-never-resolves reason as the rest of the PDF pipeline (see below). The matching/anchoring/box-painting *logic* was verified in-sandbox by injecting a synthetic `.pdf-page-wrap` with hand-built `wrap.__mk.textDivs` (bypassing `page.render()`/`buildPdfTextLayer` entirely, since neither function is exercised by this feature) across three fake pages with known text, confirming per-page/cross-page match counts, wrap-around navigation, and that zoom repaints the boxes — but the on-screen result on a real rendered PDF hasn't been eyeballed.
+
 ## Library upload (`library.html`)
 
 The upload form is a single centred card whose file input is visually hidden inside a `<label
@@ -398,6 +411,9 @@ sample documents — see below for the login):
 7. A pre-existing note (created before this rewrite, i.e. no `char_base` in its `position_json`)
    still highlights correctly.
 8. Drag a selection from one page into the next → rejected with a toast, no note created.
+9. Ctrl/Cmd+F opens MarkAI's search bar, not the browser's — the count ("n/m") and highlight boxes
+   land on the actual glyphs across multiple pages; zoom while a search is active keeps every
+   highlight box in place instead of clearing them.
 
 ## Versioning and releases — READ THIS BEFORE YOU FINISH A TASK
 

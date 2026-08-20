@@ -543,6 +543,9 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
   cursor: pointer;
 }
 .icon-btn:hover { background: var(--border); text-decoration: none; }
+.icon-btn.small { width: 22px; height: 22px; border-radius: 6px; }
+.icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.icon-btn:disabled:hover { background: var(--surface-alt); }
 
 .zoom-control { position: relative; display: flex; align-items: center; gap: 4px; }
 .zoom-control[hidden] { display: none; }
@@ -571,6 +574,57 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
   font-variant-numeric: tabular-nums;
 }
 .zoom-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+/* ---- Find-in-document ---- */
+/* A fixed overlay rather than part of the toolbar flow, so it stays put and
+   visible while the user scrolls through search results. */
+
+.search-bar {
+  position: fixed;
+  top: 66px;
+  right: 24px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  color: var(--text-muted);
+}
+.search-bar[hidden] { display: none; }
+.search-bar input {
+  width: 220px;
+  margin: 0;
+  padding: 5px 6px;
+  border: none;
+  background: transparent;
+  font-size: 13.5px;
+  color: var(--text);
+}
+.search-bar input:focus { outline: none; }
+.search-count {
+  min-width: 52px;
+  text-align: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.search-count.no-results { color: var(--danger); }
+
+/* MD/DOCX: real <mark> wraps, same technique as note highlighting. */
+mark.search-hit { background: var(--warn-soft); color: inherit; border-radius: 2px; }
+mark.search-hit-current { background: var(--warn); color: var(--text); }
+
+/* PDF: overlay boxes on the existing .pdf-highlight-layer, same technique as
+   note highlighting — see pdf-highlight-box.target for the sibling rule. */
+.pdf-highlight-box.search { background: rgba(181, 130, 10, 0.28); }
+.pdf-highlight-box.search-current {
+  background: rgba(181, 130, 10, 0.55);
+  box-shadow: 0 0 0 2px rgba(181, 130, 10, 0.55);
+}
 
 /* ---- Modal ---- */
 

@@ -21,6 +21,9 @@
   </div>
   <div class="hint">Click or select text to add a note · hold <kbd>Ctrl</kbd> to click links normally</div>
   <div class="toolbar-actions">
+    <button class="icon-btn" id="search-toggle" type="button" title="Find in document (Ctrl+F)" aria-label="Find in document">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.3-4.3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
     <button class="btn secondary small" id="export-btn" type="button">Export notes…</button>
     <div class="zoom-control" id="pdf-controls" hidden>
       <button class="btn secondary small" id="zoom-out" type="button" title="Zoom out">&minus;</button>
@@ -67,6 +70,21 @@
       <div id="note-list"><div class="hint"><span class="spinner"></span>Loading notes…</div></div>
     </div>
   </div>
+</div>
+
+<div class="search-bar" id="search-bar" role="search" hidden>
+  <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M21 21l-4.3-4.3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+  <input type="text" id="search-input" placeholder="Find in document…" autocomplete="off" aria-label="Find in document">
+  <span class="search-count" id="search-count"></span>
+  <button class="icon-btn small" id="search-prev" type="button" title="Previous match (Shift+Enter)" aria-label="Previous match">
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M18 15l-6-6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+  <button class="icon-btn small" id="search-next" type="button" title="Next match (Enter)" aria-label="Next match">
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
+  <button class="icon-btn small" id="search-close" type="button" title="Close (Esc)" aria-label="Close search">
+    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+  </button>
 </div>
 {% endblock %}
 
