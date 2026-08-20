@@ -1,6 +1,6 @@
 # MarkAI
 
-[![CI](https://img.shields.io/github/actions/workflow/status/follen99/MarkAI/ci.yml?branch=main&label=CI&logo=github&style=flat-square)](https://github.com/follen99/MarkAI/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/follen99/MarkAI/ci.yml?branch=master&label=CI&logo=github&style=flat-square)](https://github.com/follen99/MarkAI/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/markai?color=4f5bd5&label=PyPI&logo=pypi&logoColor=white&style=flat-square)](https://pypi.org/project/markai/)
 [![Python](https://img.shields.io/pypi/pyversions/markai?logo=python&logoColor=white&style=flat-square)](https://pypi.org/project/markai/)
 [![Downloads](https://img.shields.io/pypi/dm/markai?color=1f9d55&style=flat-square)](https://pypi.org/project/markai/)
@@ -202,10 +202,10 @@ This is a working single-user local tool, built to be deployable later but not d
 
 `python tests/smoke_test.py` runs the end-to-end check (it installs nothing, but expects MarkAI to
 be installed — `pip install -e .` first). CI runs it on Linux, macOS and Windows against a freshly
-built wheel, for every pull request against `main`.
+built wheel, for every pull request against `master`.
 
 Releases are driven by the version number rather than by hand-pushed tags: bump `__version__` in
-`markai/__init__.py` inside your branch, and merging to `main` builds, tests, publishes to PyPI and
+`markai/__init__.py` inside your branch, and merging to `master` builds, tests, publishes to PyPI and
 tags the release automatically. Merge a branch that didn't touch `__version__` and nothing is
 published, so day-to-day work never ships a release by accident.
 

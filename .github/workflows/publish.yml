@@ -1,7 +1,7 @@
 name: Publish to PyPI
 
 # Releases are driven by the version number, not by tags you push by hand:
-# every push to main (i.e. every merge) checks whether markai/__init__.py's
+# every push to master (i.e. every merge) checks whether markai/__init__.py's
 # __version__ is already on PyPI. If it is, this workflow does nothing. If it
 # isn't, that version is built, tested, published, and tagged.
 #
@@ -14,7 +14,7 @@ name: Publish to PyPI
 # environment "pypi".
 on:
   push:
-    branches: [main]
+    branches: [master]
   workflow_dispatch:
 
 concurrency:

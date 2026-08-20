@@ -401,7 +401,8 @@ sample documents — see below for the login):
 
 ## Versioning and releases — READ THIS BEFORE YOU FINISH A TASK
 
-**`main` is the release branch. A merge into it publishes to PyPI whenever
+**`master` is the release branch (this repo's default branch is `master`, not `main` — the
+workflows are wired to that name). A merge into it publishes to PyPI whenever
 `markai/__init__.py`'s `__version__` is a number that isn't on PyPI yet.** Nobody tags anything by
 hand; the version number *is* the release trigger. So the version bump is part of your job, not a
 chore for the user afterwards.
@@ -425,7 +426,7 @@ Two versions do **not** need touching: `pyproject.toml` reads `__version__` via 
 
 ### What the pipeline does with it
 
-`.github/workflows/publish.yml`, on every push to `main` (and via `workflow_dispatch`):
+`.github/workflows/publish.yml`, on every push to `master` (and via `workflow_dispatch`):
 
 1. reads `__version__` textually and asks PyPI whether that version exists;
 2. if it exists → stops, quietly, having published nothing (this is the normal outcome for merges
@@ -436,7 +437,7 @@ Two versions do **not** need touching: `pyproject.toml` reads `__version__` via 
    notes. The tag comes *after* a successful upload on purpose: no tag can ever claim a version that
    isn't actually on PyPI.
 
-`.github/workflows/ci.yml` runs the smoke test on Linux/macOS/Windows for pushes to `main` and PRs
+`.github/workflows/ci.yml` runs the smoke test on Linux/macOS/Windows for pushes to `master` and PRs
 targeting it (deliberately not on every branch — feature branches stay quiet until there's a PR). It
 also posts a notice on each PR saying whether merging it will publish, and which version.
 
@@ -478,7 +479,7 @@ repo and it is what CI and the release pipeline both run.
 ## If you're picking this up fresh
 
 0. Read "Versioning and releases" above before you start writing code — if your change is
-   user-visible it needs a `__version__` bump in the same commit, and merging to `main` will publish
+   user-visible it needs a `__version__` bump in the same commit, and merging to `master` will publish
    it.
 1. `git status` and `git log` first — don't assume the working tree matches what was last committed.
 2. If the PDF verification checklist above hasn't been run in a real visible browser tab yet, that's

@@ -1,12 +1,12 @@
 name: CI
 
-# Only main and the pull requests aimed at it. Feature branches stay quiet until
+# Only master and the pull requests aimed at it. Feature branches stay quiet until
 # you open a PR, so day-to-day work doesn't burn Actions minutes.
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 jobs:
   smoke:
