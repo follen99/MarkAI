@@ -50,7 +50,7 @@ markai/
   documents.py       library CRUD, file upload/storage, serves parsed content or raw PDF bytes
   notes.py           notes CRUD, bulk actions, manual export download, sync-status poll endpoint
   sync.py            writes/reads the two files in a document's "source folder"
-  settings.py        AI-provider settings CRUD (storage only) + resolve-ai stub endpoint
+  settings.py        /settings page: change password + AI-provider CRUD (storage only) + resolve-ai stub
   ai/base.py         AIProvider ABC — NOT implemented, just an extension point (see below)
   parsers/
     markdown_parser.py   md -> HTML blocks tagged with data-line + heading outline
@@ -92,6 +92,26 @@ ancestor of the text layer) and **must** track `pdfScale` — pdf.js reads it vi
 and both layout (percentage left/top) and zoom (`updateTextLayer` with `mustRescale:true`) depend on
 it being current. See `app.css`'s `.pdf-text-layer` block — those rules are a port of pdf.js's own
 `text_layer_builder.css` and are load-bearing for glyph alignment, not decorative.
+
+## Accounts, the default login, and password recovery
+
+A brand-new database is seeded with **`admin@markai.local` / `markai`** (`db.seed_default_user`,
+constants `DEFAULT_EMAIL`/`DEFAULT_PASSWORD`). Two rules make that safe enough for a local tool and
+they're easy to break by accident:
+
+- Seeding happens **only when the users table is empty**. An existing install must never sprout a
+  second, publicly-documented account behind its owner's back.
+- The login page advertises those credentials via `auth.default_login_hint`, which returns them only
+  while `check_password_hash` still matches `DEFAULT_PASSWORD`. It's derived from the hash rather
+  than a stored flag, so the hint disappears by itself the moment the password changes — including a
+  change made through `markai reset-password` or straight in SQLite. Don't replace it with a boolean
+  column; the flag would go stale and the page would keep advertising a rotated password.
+
+Password *change* lives in `/settings` and requires the current password. Password *recovery* is
+`markai reset-password` in `cli.py`: no email, no self-service web reset. Whoever can run that
+command can already read the SQLite file, so the terminal is the credential; adding a web reset flow
+would just create a second unauthenticated way into the app. The login page's "Forgot your password?"
+`<details>` block tells the user that command — keep the two in step if the CLI ever changes.
 
 ## Data model (SQLite, see `db.py` for the authoritative schema)
 
@@ -233,8 +253,10 @@ Notes: `GET|POST /documents/<id>/notes`, `PATCH|DELETE /notes/<id>`,
 `POST /documents/<id>/notes/bulk` (`{ids:[...], action: "done"|"pending"|"delete"}`, one transaction
 + one export write), `GET /documents/<id>/notes/export?format=notes|bundle` (manual download),
 `GET /documents/<id>/sync-status` (poll).
-Settings (stub): `GET|POST /settings/ai-providers`, `DELETE /settings/ai-providers/<id>`,
-`POST /notes/<id>/resolve-ai` → always 501, not implemented.
+Settings: `GET /settings` (account + AI providers on one page), `POST /settings/password`
+(change password, current one required), `POST /settings/ai-providers`,
+`DELETE /settings/ai-providers/<id>`, `GET /settings/ai-providers` → 302 to `/settings` (the page
+used to live there), `POST /notes/<id>/resolve-ai` → always 501, not implemented.
 
 ## Frontend interaction model (`viewer.js`)
 
@@ -377,30 +399,75 @@ sample documents — see below for the login):
    still highlights correctly.
 8. Drag a selection from one page into the next → rejected with a toast, no note created.
 
-## Releasing
+## Versioning and releases — READ THIS BEFORE YOU FINISH A TASK
 
-`pyproject.toml` is the source of truth for metadata; the version is read from `markai/__init__.py`
-(`__version__`) by hatchling, so bump it there. Then:
+**`main` is the release branch. A merge into it publishes to PyPI whenever
+`markai/__init__.py`'s `__version__` is a number that isn't on PyPI yet.** Nobody tags anything by
+hand; the version number *is* the release trigger. So the version bump is part of your job, not a
+chore for the user afterwards.
 
-```bash
-git tag v0.1.1 && git push --tags
-```
+### What you must do at the end of a change
 
-`.github/workflows/publish.yml` builds sdist + wheel, refuses to publish if the tag doesn't match
-`markai.__version__` (PyPI releases are permanent — a wrong number can't be taken back), runs
-`twine check` and the smoke test against the built wheel, then uploads via **PyPI Trusted Publishing**
-(OIDC, no API token stored anywhere). The one-time PyPI-side setup is a GitHub publisher on project
-`markai` for `follen99/MarkAI`, workflow `publish.yml`, environment `pypi`.
+1. Decide whether the change is user-visible (anything that changes behaviour, UI, CLI, exports, the
+   data model, or a dependency). Internal refactors, comments, tests, CI and docs alone are not.
+2. If it is, **bump `__version__` in `markai/__init__.py`** in the same commit as the change:
+   - **patch** (`0.2.0` → `0.2.1`) — bug fix, or a small UI/wording tweak.
+   - **minor** (`0.2.1` → `0.3.0`) — a new feature, a new route/CLI flag, a changed default.
+   - **major** — reserved for the user to decide. Ask; don't do it unprompted.
+   Never reuse or lower a number that has already been published: PyPI releases are permanent, and
+   the workflow will simply skip a version it finds already uploaded.
+3. Mention the new version in your summary to the user, so they know the merge will ship it.
+4. If the change is worth telling users about, update `README.md` too — that text is also the PyPI
+   project page.
+
+Two versions do **not** need touching: `pyproject.toml` reads `__version__` via hatchling
+(`[tool.hatch.version]`), and there is no changelog file. One number, one place.
+
+### What the pipeline does with it
+
+`.github/workflows/publish.yml`, on every push to `main` (and via `workflow_dispatch`):
+
+1. reads `__version__` textually and asks PyPI whether that version exists;
+2. if it exists → stops, quietly, having published nothing (this is the normal outcome for merges
+   that didn't bump anything);
+3. if it doesn't → builds sdist + wheel, runs `twine check`, installs the wheel and runs
+   `tests/smoke_test.py` against it, uploads via **PyPI Trusted Publishing** (OIDC — no API token
+   is stored anywhere), then creates the `v<version>` git tag and a GitHub release with generated
+   notes. The tag comes *after* a successful upload on purpose: no tag can ever claim a version that
+   isn't actually on PyPI.
+
+`.github/workflows/ci.yml` runs the smoke test on Linux/macOS/Windows for pushes to `main` and PRs
+targeting it (deliberately not on every branch — feature branches stay quiet until there's a PR). It
+also posts a notice on each PR saying whether merging it will publish, and which version.
+
+`uvx markai` needs nothing from us beyond a successful upload: it resolves `markai` from PyPI like
+any other package, so the moment the publish job is green the new version is what users get.
+
+One-time setup on the PyPI side (the user does this once, not you): project `markai` → Publishing →
+GitHub publisher, owner `follen99`, repository `MarkAI`, workflow `publish.yml`, environment `pypi`.
+
+### Verifying before you hand back
 
 `tests/smoke_test.py` deliberately imports `markai` rather than the source tree (it's run from
 `tests/`, so the *installed* package wins) — that's what makes it catch templates, CSS/JS or the
-vendored pdf.js being left out of the wheel, which is the packaging bug that actually happens.
+vendored pdf.js being left out of the wheel, which is the packaging bug that actually happens. Run
+it against a real build, not just the checkout:
+
+```bash
+.venv/Scripts/python -m build
+<a throwaway venv>/Scripts/python -m pip install --force-reinstall --no-deps dist/markai-<version>-py3-none-any.whl
+<a throwaway venv>/Scripts/python tests/smoke_test.py
+```
+
+Add a check to that file for any user-visible feature you add. It is the only automated test in the
+repo and it is what CI and the release pipeline both run.
 
 ## Things NOT done / deliberately deferred
 
 - No file-watcher (e.g. `watchdog`) — status-file sync is polling-based on purpose, to keep the
   dependency list minimal.
-- No password recovery, no email verification (explicit user requirement).
+- No email verification and no email-based password reset (explicit user requirement) — recovery
+  is the local `markai reset-password` command, see above.
 - No CSRF protection, plaintext-stored `api_key` in `ai_providers` — explicitly acceptable per the
   user for now ("security not a priority yet"); revisit before any real deployment.
 - `.gitignore` excludes `.venv/`, `.claude/`, `data/`, `__pycache__/`, `*.pyc`.
@@ -410,6 +477,9 @@ vendored pdf.js being left out of the wheel, which is the packaging bug that act
 
 ## If you're picking this up fresh
 
+0. Read "Versioning and releases" above before you start writing code — if your change is
+   user-visible it needs a `__version__` bump in the same commit, and merging to `main` will publish
+   it.
 1. `git status` and `git log` first — don't assume the working tree matches what was last committed.
 2. If the PDF verification checklist above hasn't been run in a real visible browser tab yet, that's
    the highest-value next step: it's the one part of the current code that's been reviewed and

@@ -3,11 +3,17 @@
 Deliberately does the boring local-app things a bare `flask run` doesn't: binds
 to loopback only, picks a port that is actually free, serves through waitress
 rather than the development server, and opens a browser at the right URL.
+
+Two commands:
+    markai                   start the app (the default, so `markai --port X` works)
+    markai reset-password    local password recovery, see reset_password_command
 """
 
 import argparse
+import getpass
 import os
 import socket
+import sys
 import threading
 import webbrowser
 
@@ -50,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="markai",
         description="Annotate documents locally and export the notes for an AI agent to apply.",
+        epilog="Other commands: markai reset-password [--email ADDRESS] [--data-dir DIR]",
     )
     parser.add_argument("--port", type=int, default=None, help=f"port to listen on (default {DEFAULT_PORT})")
     parser.add_argument(
@@ -67,7 +74,85 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def reset_password_command(argv) -> int:
+    """Password recovery for a local install.
+
+    There is no email to send a link to, and inventing a self-service web reset
+    would just be a second unauthenticated way into the app. Physical access to
+    the machine is the credential here: whoever can run this command can already
+    read the SQLite file, so a terminal prompt is both the simplest and the least
+    dangerous recovery path.
+    """
+    parser = argparse.ArgumentParser(
+        prog="markai reset-password",
+        description="Set a new password for a MarkAI account on this machine.",
+    )
+    parser.add_argument("--email", default=None, help="account to reset (asked for if omitted)")
+    parser.add_argument("--data-dir", default=None, help="database location")
+    parser.add_argument(
+        "--password",
+        default=None,
+        help="new password (omit to be prompted; passing it here leaves it in your shell history)",
+    )
+    args = parser.parse_args(argv)
+
+    from werkzeug.security import generate_password_hash
+
+    from .db import get_db
+
+    app = create_app(data_dir=args.data_dir)
+    with app.app_context():
+        db = get_db()
+        users = db.execute("SELECT id, email FROM users ORDER BY id").fetchall()
+        if not users:
+            print("No accounts in this database:", app.config["DATA_DIR"])
+            return 1
+
+        email = (args.email or "").strip().lower()
+        if not email:
+            if len(users) == 1:
+                email = users[0]["email"]
+                print(f"Account: {email}")
+            else:
+                print("Accounts in this database:")
+                for user in users:
+                    print(f"  - {user['email']}")
+                email = input("Which one? ").strip().lower()
+
+        target = next((u for u in users if u["email"] == email), None)
+        if target is None:
+            print(f"No account with email {email!r} in {app.config['DATA_DIR']}")
+            return 1
+
+        password = args.password
+        if not password:
+            password = getpass.getpass("New password: ")
+            if password != getpass.getpass("Repeat it: "):
+                print("The two passwords don't match.")
+                return 1
+        if len(password) < 6:
+            print("The password must be at least 6 characters.")
+            return 1
+
+        db.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (generate_password_hash(password), target["id"]),
+        )
+        db.commit()
+
+    print(f"Password updated for {email}. Start MarkAI and log in with it.")
+    return 0
+
+
 def main(argv=None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # Hand-rolled instead of argparse subparsers so that the bare `markai` and
+    # `markai --port 9000` stay the default command, which is what people type.
+    if argv and argv[0] == "reset-password":
+        return reset_password_command(argv[1:])
+    if argv and argv[0] == "serve":
+        argv = argv[1:]
+
     args = build_parser().parse_args(argv)
 
     app = create_app(data_dir=args.data_dir)

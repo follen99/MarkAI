@@ -12,7 +12,7 @@
     <a class="brand" href="{{ url_for('documents.library') if g.user else url_for('auth.login') }}">MarkAI</a>
     {% if g.user %}
     <div class="topbar-right">
-      <a href="{{ url_for('settings.ai_providers') }}">AI providers</a>
+      <a href="{{ url_for('settings.index') }}">Settings</a>
       <span>{{ g.user['email'] }}</span>
       <form method="post" action="{{ url_for('auth.logout') }}" style="margin:0;">
         <button class="btn secondary small" type="submit">Log out</button>

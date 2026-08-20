@@ -1,5 +1,12 @@
 # MarkAI
 
+[![CI](https://img.shields.io/github/actions/workflow/status/follen99/MarkAI/ci.yml?branch=main&label=CI&logo=github&style=flat-square)](https://github.com/follen99/MarkAI/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/markai?color=4f5bd5&label=PyPI&logo=pypi&logoColor=white&style=flat-square)](https://pypi.org/project/markai/)
+[![Python](https://img.shields.io/pypi/pyversions/markai?logo=python&logoColor=white&style=flat-square)](https://pypi.org/project/markai/)
+[![Downloads](https://img.shields.io/pypi/dm/markai?color=1f9d55&style=flat-square)](https://pypi.org/project/markai/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-b5820a?style=flat-square)](LICENSE)
+[![Local-first](https://img.shields.io/badge/local--first-your%20files%20never%20leave-4f5bd5?style=flat-square)](#quick-start)
+
 **Reviewing a document is easy. Getting the review *applied* is the part that wastes your afternoon.**
 You read a thesis, a spec or a set of docs, and you leave forty comments — a wrong figure reference
 in §3.2, a paragraph that contradicts the previous chapter, a term that should be spelled the same
@@ -91,6 +98,8 @@ The status file the agent writes back is just as small:
 - **Two-way sync.** Notes are written to the source folder on every change; statuses your agent
   writes back are pulled in on a 5 s poll, on demand via Refresh, and before every note edit.
 - **Drag & drop upload** anywhere on the library page.
+- **Settings page** for your account (change password, current one required) and AI-provider
+  configuration.
 - Local-first: a single Flask process and one SQLite file. Nothing leaves your machine.
 
 ## Quick start
@@ -110,8 +119,25 @@ uv tool install markai     # or: pipx install markai
 markai
 ```
 
-Register an account on first run — it is stored in your own SQLite file, on your own machine — and
-upload a document.
+A fresh install comes with an account ready to use, and the login page shows it to you:
+
+| Email | Password |
+| --- | --- |
+| `admin@markai.local` | `markai` |
+
+Change it under **Settings → Change password** (the hint on the login page disappears as soon as you
+do), or create your own account instead. Everything is stored in your own SQLite file, on your own
+machine.
+
+### Forgot your password?
+
+There is no email to send a reset link to, so recovery happens from a terminal on the same machine:
+
+```bash
+markai reset-password
+```
+
+It lists the accounts in your database and sets a new password for the one you choose.
 
 ### Options
 
@@ -176,7 +202,12 @@ This is a working single-user local tool, built to be deployable later but not d
 
 `python tests/smoke_test.py` runs the end-to-end check (it installs nothing, but expects MarkAI to
 be installed — `pip install -e .` first). CI runs it on Linux, macOS and Windows against a freshly
-built wheel.
+built wheel, for every pull request against `main`.
+
+Releases are driven by the version number rather than by hand-pushed tags: bump `__version__` in
+`markai/__init__.py` inside your branch, and merging to `main` builds, tests, publishes to PyPI and
+tags the release automatically. Merge a branch that didn't touch `__version__` and nothing is
+published, so day-to-day work never ships a release by accident.
 
 ## License
 

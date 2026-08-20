@@ -1,9 +1,12 @@
 name: CI
 
+# Only main and the pull requests aimed at it. Feature branches stay quiet until
+# you open a PR, so day-to-day work doesn't burn Actions minutes.
 on:
   push:
-    branches: [master, main]
+    branches: [main]
   pull_request:
+    branches: [main]
 
 jobs:
   smoke:
@@ -37,3 +40,27 @@ jobs:
         # Installs from the wheel, so this also catches templates/static or the
         # vendored pdf.js being left out of the package.
         run: python tests/smoke_test.py
+
+  version:
+    name: Version bump reminder
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compare __version__ with the base branch
+        # Not a failure: plenty of PRs (docs, CI, refactors) shouldn't release.
+        # It just makes "this merge will publish / won't publish" visible before
+        # the merge instead of after.
+        run: |
+          read_version() { python -c "import re,sys;print(re.search(r'__version__ = \"([^\"]+)\"', open(sys.argv[1]).read()).group(1))" "$1"; }
+          HEAD_VERSION=$(read_version markai/__init__.py)
+          git show "origin/${{ github.base_ref }}:markai/__init__.py" > /tmp/base_init.py
+          BASE_VERSION=$(read_version /tmp/base_init.py)
+          if [ "$HEAD_VERSION" = "$BASE_VERSION" ]; then
+            echo "::notice::__version__ is unchanged ($HEAD_VERSION). Merging this PR will NOT publish a release."
+          else
+            echo "::notice::__version__ goes $BASE_VERSION -> $HEAD_VERSION. Merging this PR WILL publish $HEAD_VERSION to PyPI."
+          fi

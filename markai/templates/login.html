@@ -5,9 +5,21 @@
   <div class="card">
     <h1>Welcome back</h1>
     <p class="subtitle">Log in to open your documents.</p>
+    {% if default_login %}
+    <div class="default-login">
+      <strong>First run?</strong>
+      <span>Sign in with the account MarkAI created for you:</span>
+      <code>{{ default_login['email'] }}</code>
+      <code>{{ default_login['password'] }}</code>
+      <span class="default-login-note">
+        This box disappears once you change the password in Settings.
+      </span>
+    </div>
+    {% endif %}
     <form method="post">
       <label for="email">Email</label>
-      <input type="email" id="email" name="email" required autofocus>
+      <input type="email" id="email" name="email"
+             value="{{ default_login['email'] if default_login else '' }}" required autofocus>
       <label for="password">Password</label>
       <input type="password" id="password" name="password" required>
       <button class="btn" type="submit" style="width:100%;justify-content:center;">Log in</button>
@@ -15,6 +27,19 @@
     <p style="margin-top:16px;font-size:13.5px;color:var(--text-muted);">
       No account yet? <a href="{{ url_for('auth.register') }}">Create one</a>
     </p>
+    <details class="forgot-password">
+      <summary>Forgot your password?</summary>
+      <p>
+        There is no email to send a reset link to — MarkAI runs entirely on this machine, so
+        recovery happens from a terminal here. Run:
+      </p>
+      <pre><code>markai reset-password</code></pre>
+      <p>
+        It lists the accounts in your database and sets a new password for the one you pick.
+        From a source checkout use
+        <code>python -m markai.cli reset-password --data-dir ./data</code>.
+      </p>
+    </details>
   </div>
 </div>
 {% endblock %}

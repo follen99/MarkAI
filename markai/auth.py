@@ -4,7 +4,7 @@ import sqlite3
 from flask import Blueprint, flash, g, redirect, render_template, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from .db import get_db
+from .db import DEFAULT_EMAIL, DEFAULT_PASSWORD, get_db
 
 bp = Blueprint("auth", __name__)
 
@@ -59,6 +59,22 @@ def register():
     return render_template("register.html")
 
 
+def default_login_hint(db):
+    """The default credentials, but only while they are still the real ones.
+
+    Checking the hash rather than a flag means the hint disappears by itself the
+    moment the password is changed — including a change made straight in the
+    database or through `markai reset-password` — so the login page can never
+    advertise a password that has been rotated.
+    """
+    row = db.execute(
+        "SELECT password_hash FROM users WHERE email = ?", (DEFAULT_EMAIL,)
+    ).fetchone()
+    if row is not None and check_password_hash(row["password_hash"], DEFAULT_PASSWORD):
+        return {"email": DEFAULT_EMAIL, "password": DEFAULT_PASSWORD}
+    return None
+
+
 @bp.route("/login", methods=("GET", "POST"))
 def login():
     if request.method == "POST":
@@ -78,7 +94,7 @@ def login():
 
         flash(error)
 
-    return render_template("login.html")
+    return render_template("login.html", default_login=default_login_hint(get_db()))
 
 
 @bp.route("/logout", methods=("POST",))

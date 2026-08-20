@@ -158,6 +158,61 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 }
 .banner strong { color: inherit; }
 
+/* ---- Auth extras ---- */
+
+.default-login {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  padding: 12px 14px;
+  margin-bottom: 18px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 13px;
+}
+.default-login strong { color: var(--accent); }
+.default-login code {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12.5px;
+  user-select: all;
+}
+.default-login-note { flex-basis: 100%; color: var(--text-muted); font-size: 12px; }
+
+.forgot-password { margin-top: 10px; font-size: 13px; color: var(--text-muted); }
+.forgot-password summary { cursor: pointer; color: var(--accent); }
+.forgot-password p { margin: 8px 0; }
+.forgot-password pre {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  overflow-x: auto;
+}
+.forgot-password code { font-size: 12.5px; }
+
+/* ---- Settings page ---- */
+
+.settings-section { margin-bottom: 34px; }
+.settings-section > h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  padding-bottom: 8px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-row { display: flex; align-items: baseline; gap: 10px; font-size: 14px; }
+.settings-label { color: var(--text-muted); font-size: 13px; }
+.settings-section .card h2 { font-size: 15px; text-transform: none; letter-spacing: 0; border: none; }
+
 .doc-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));

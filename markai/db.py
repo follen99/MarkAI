@@ -2,6 +2,15 @@ import sqlite3
 
 import click
 from flask import current_app, g
+from werkzeug.security import generate_password_hash
+
+# Seeded into a brand-new database so a fresh install is usable immediately —
+# this is a local single-user tool, and making someone invent an account before
+# they can open a PDF is pure friction. The login page advertises these two while
+# they still work, and stops the moment the password is changed (see
+# auth.default_login_hint).
+DEFAULT_EMAIL = "admin@markai.local"
+DEFAULT_PASSWORD = "markai"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -71,6 +80,21 @@ def close_db(e=None):
 def init_db():
     db = get_db()
     db.executescript(SCHEMA)
+    db.commit()
+    seed_default_user(db)
+
+
+def seed_default_user(db):
+    """Create the default account, but only in a database that has no users at
+    all: an existing install must never sprout a second, publicly-documented
+    login behind its owner's back."""
+    existing = db.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+    if existing:
+        return
+    db.execute(
+        "INSERT INTO users (email, password_hash) VALUES (?, ?)",
+        (DEFAULT_EMAIL, generate_password_hash(DEFAULT_PASSWORD)),
+    )
     db.commit()
 
 

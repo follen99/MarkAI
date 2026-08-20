@@ -65,6 +65,58 @@ def main() -> int:
 
         client = app.test_client()
 
+        # A fresh database ships with a usable account, and the login page says so.
+        login_page = client.get("/login")
+        check(
+            "default account advertised on the login page",
+            markai.db.DEFAULT_EMAIL.encode() in login_page.data
+            and markai.db.DEFAULT_PASSWORD.encode() in login_page.data,
+        )
+        default_login = client.post(
+            "/login",
+            data={"email": markai.db.DEFAULT_EMAIL, "password": markai.db.DEFAULT_PASSWORD},
+            follow_redirects=True,
+        )
+        check("default account can log in", default_login.status_code == 200)
+
+        settings = client.get("/settings")
+        check(
+            "settings page has both sections",
+            settings.status_code == 200
+            and b"current_password" in settings.data
+            and b"Add a provider" in settings.data,
+        )
+
+        rejected = client.post(
+            "/settings/password",
+            data={
+                "current_password": "not-the-password",
+                "new_password": "another-password",
+                "confirm_password": "another-password",
+            },
+            follow_redirects=True,
+        )
+        check("password change rejects a wrong current password", b"not correct" in rejected.data)
+
+        changed = client.post(
+            "/settings/password",
+            data={
+                "current_password": markai.db.DEFAULT_PASSWORD,
+                "new_password": "a-better-password",
+                "confirm_password": "a-better-password",
+            },
+            follow_redirects=True,
+        )
+        check("password change accepted", b"Password changed." in changed.data)
+        client.post("/logout")
+        # Looks for the box itself: the word "markai" also appears in the page's
+        # password-recovery instructions, so searching for the password string
+        # would match forever.
+        check(
+            "login hint disappears once the default password is gone",
+            b'class="default-login"' not in client.get("/login").data,
+        )
+
         client.post("/register", data={"email": EMAIL, "password": PASSWORD})
         login = client.post(
             "/login", data={"email": EMAIL, "password": PASSWORD}, follow_redirects=True
@@ -87,7 +139,11 @@ def main() -> int:
         check("markdown upload", upload.status_code == 200 and b"Sample document" in upload.data)
 
         with app.app_context():
-            row = markai.db.get_db().execute("SELECT id FROM documents LIMIT 1").fetchone()
+            row = markai.db.get_db().execute(
+                "SELECT d.id FROM documents d JOIN users u ON u.id = d.user_id "
+                "WHERE u.email = ? LIMIT 1",
+                (EMAIL,),
+            ).fetchone()
         check("document stored", row is not None)
         if row is None:
             return report()
