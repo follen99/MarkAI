@@ -5,7 +5,7 @@ from flask import Flask
 
 from . import db
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 
 def default_data_dir() -> str:

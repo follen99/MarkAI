@@ -37,9 +37,11 @@
     </div>
     <div class="doc-actions">
       <a class="btn small" href="{{ url_for('documents.view', document_id=doc['id']) }}">Open</a>
-      <button class="btn secondary small" onclick="renameDoc({{ doc['id'] }}, {{ doc['title']|tojson }})">Rename</button>
-      <button class="btn secondary small" onclick="setSourceFolder({{ doc['id'] }}, {{ (doc['source_folder'] or '')|tojson }})">Source folder</button>
-      <button class="btn danger small" onclick="deleteDoc({{ doc['id'] }}, this)">Delete</button>
+      <button class="btn secondary small" data-action="rename"
+              data-id="{{ doc['id'] }}" data-title="{{ doc['title'] }}">Rename</button>
+      <button class="btn secondary small" data-action="source-folder"
+              data-id="{{ doc['id'] }}" data-source-folder="{{ doc['source_folder'] or '' }}">Source folder</button>
+      <button class="btn danger small" data-action="delete" data-id="{{ doc['id'] }}">Delete</button>
     </div>
   </div>
   {% endfor %}
@@ -58,6 +60,21 @@
 
 {% block scripts %}
 <script>
+// Delegated from the grid rather than inline onclick="..." handlers: a title
+// with a quote in it (or anything JSON.stringify would need to escape) used to
+// break the attribute when the value was inlined as a JS literal — `tojson`
+// wraps a string in literal double quotes, which then closed the
+// onclick="..." attribute early, no matter what the title actually was. Plain
+// data-* attributes go through Jinja's normal HTML-attribute escaping instead.
+document.querySelector(".doc-grid")?.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-action]");
+  if (!btn) return;
+  const id = btn.dataset.id;
+  if (btn.dataset.action === "rename") renameDoc(id, btn.dataset.title);
+  else if (btn.dataset.action === "source-folder") setSourceFolder(id, btn.dataset.sourceFolder);
+  else if (btn.dataset.action === "delete") deleteDoc(id, btn);
+});
+
 async function renameDoc(id, currentTitle) {
   const title = prompt("New title:", currentTitle);
   if (!title) return;
@@ -168,13 +185,15 @@ async function deleteDoc(id, btn) {
       return;
     }
 
-    // Hand the dropped file to the form's own input so the normal multipart
-    // POST does the upload; no separate fetch path to keep in sync.
+    // Hand the dropped file to the form's own input, same as picking it via the
+    // file dialog, and stop there — the user still has to fill in the optional
+    // title and press Upload. It used to call form.submit() here, which fired
+    // the upload immediately and gave no chance to set a title.
     const transfer = new DataTransfer();
     transfer.items.add(file);
     input.files = transfer.files;
     showFile(file.name);
-    form.submit();
+    document.getElementById("title").focus();
   });
 })();
 </script>
