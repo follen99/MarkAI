@@ -353,7 +353,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .note-status.pending { background: var(--warn-soft); color: var(--warn); }
 .note-status.done { background: var(--success-soft); color: var(--success); }
 
-.viewer-main { flex: 1; overflow-y: auto; position: relative; background: var(--bg); }
+.viewer-main { flex: 1; overflow: auto; position: relative; background: var(--bg); }
 .viewer-toolbar {
   display: flex;
   align-items: center;
@@ -430,7 +430,7 @@ mark.note-highlight {
 }
 
 .popover {
-  position: absolute;
+  position: fixed;
   z-index: 50;
   width: 300px;
   background: var(--surface);
@@ -449,12 +449,46 @@ mark.note-highlight {
   max-height: 90px;
   overflow-y: auto;
 }
+.popover-hint { font-size: 12px; color: var(--warn); margin-bottom: 8px; }
 .popover-actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 10px; }
 
-#pdf-container { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 20px; }
+.mk-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%) translateY(8px);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 8px 14px;
+  font-size: 13px;
+  z-index: 60;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.mk-toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ---------- PDF viewer ---------------------------------------------- */
+
+.doc-pane[data-doc-type="pdf"] {
+  max-width: none;
+  padding: 24px 0 200px;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
 .pdf-page-wrap { position: relative; box-shadow: var(--shadow); background: #fff; }
 .pdf-page-wrap canvas { display: block; }
-.pdf-highlight-layer { position: absolute; inset: 0; pointer-events: none; }
+
+.pdf-page-wrap.pdf-anchor-missing { outline: 2px dashed var(--warn); outline-offset: 3px; }
+
+.pdf-highlight-layer { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
 .pdf-highlight-box {
   position: absolute;
   background: rgba(255, 229, 138, 0.55);
@@ -463,15 +497,54 @@ mark.note-highlight {
 .pdf-highlight-box.hover { background: rgba(79, 91, 213, 0.14); }
 .pdf-highlight-box.block { background: rgba(79, 91, 213, 0.08); }
 .pdf-highlight-box.target { background: rgba(255, 229, 138, 0.85); box-shadow: 0 0 0 2px rgba(255, 229, 138, 0.85); }
+
+/* Text layer: port of pdf.js's own web/text_layer_builder.css (v3.11.174).
+   renderTextLayer writes percentage left/top, calc(var(--scale-factor)*Npx)
+   font sizes, and transform: rotate() scaleX() — these rules are load-bearing
+   for that geometry, not decorative. --scale-factor is set from JS on the
+   page wrap (an ancestor) and must track pdfScale exactly. */
 .pdf-text-layer {
   position: absolute;
+  text-align: initial;
   inset: 0;
   overflow: hidden;
+  opacity: 1;
   line-height: 1;
-  opacity: 0.2;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 2;
+  caret-color: transparent;
 }
-.pdf-text-layer span { position: absolute; white-space: pre; color: transparent; cursor: text; }
-.pdf-text-layer span::selection { background: #4f5bd5; opacity: 0.4; }
+.pdf-text-layer span,
+.pdf-text-layer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+.pdf-text-layer span.markedContent { top: 0; height: 0; }
+
+.pdf-text-layer ::selection { background: rgba(79, 91, 213, 0.35); }
+.pdf-text-layer br::selection { background: transparent; }
+
+.pdf-text-layer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: -1;
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.pdf-text-layer .endOfContent.active { top: 0; }
+
+/* Markers ride the page's own right margin, so they stay on-screen
+   regardless of how the surrounding layout is sized, and their `top` is
+   written from JS as a percentage of page height so they track zoom. */
+.pdf-page-wrap .note-marker { left: auto; right: 8px; z-index: 4; }
 
 .empty-state { text-align: center; color: var(--text-muted); padding: 60px 20px; }
 

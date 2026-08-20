@@ -10,8 +10,10 @@
   let pdfScale = 1.2;
   let pdfOutlineFlat = []; // [{level, title, page, id}]
   let activeHighlight = null;
+  let activeHighlightPosition = null;
   let pdfRenderToken = 0;
   let selectionMode = false;
+  let lastHandledSelectionKey = null;
   const selectedNoteIds = new Set();
   const usedMarkerTops = new WeakMap();
 
@@ -42,6 +44,38 @@
   function shortWords(text, n, fromEnd) {
     const words = (text || "").trim().split(/\s+/).filter(Boolean);
     return (fromEnd ? words.slice(-n) : words.slice(0, n)).join(" ");
+  }
+
+  function clamp(v, lo, hi) {
+    return Math.max(lo, Math.min(hi, v));
+  }
+
+  // Scrolls #viewer-main (the real scroll container for both md/docx and pdf
+  // content) so rectOrEl is centered, instantly. Reading getBoundingClientRect
+  // right after this reflects the new position — unlike a smooth scrollIntoView,
+  // which is asynchronous and leaves stale rects for anything read immediately
+  // after (that staleness was why popovers used to land at the pre-scroll spot).
+  function scrollIntoViewerCenter(rectOrEl) {
+    const containerRect = viewerMain.getBoundingClientRect();
+    const rect = rectOrEl instanceof Element ? rectOrEl.getBoundingClientRect() : rectOrEl;
+    const targetMid = rect.top + rect.height / 2;
+    const containerMid = containerRect.top + containerRect.height / 2;
+    const delta = targetMid - containerMid;
+    const maxScroll = Math.max(0, viewerMain.scrollHeight - viewerMain.clientHeight);
+    viewerMain.scrollTop = clamp(viewerMain.scrollTop + delta, 0, maxScroll);
+  }
+
+  function showToast(msg) {
+    let toast = document.querySelector(".mk-toast");
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.className = "mk-toast";
+      document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.classList.add("visible");
+    clearTimeout(toast._mkTimer);
+    toast._mkTimer = setTimeout(() => toast.classList.remove("visible"), 2200);
   }
 
   // ---------- Notes API ----------
@@ -95,12 +129,15 @@
       activeHighlight.clear();
       activeHighlight = null;
     }
+    activeHighlightPosition = null;
   }
 
   function highlightPosition(position, opts) {
     clearHighlight();
     const scroll = !opts || opts.scroll !== false;
+    activeHighlightPosition = position;
     activeHighlight = cfg.docType === "pdf" ? highlightPdfPosition(position, scroll) : highlightBlockPosition(position, scroll);
+    return activeHighlight;
   }
 
   function findBlockForPosition(position) {
@@ -192,7 +229,7 @@
       }
     }
 
-    if (scroll) block.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (scroll) scrollIntoViewerCenter(block);
 
     return {
       clear() {
@@ -204,6 +241,9 @@
           parent.normalize();
         }
       },
+      anchorRect() {
+        return (markEl || block).getBoundingClientRect();
+      },
     };
   }
 
@@ -213,6 +253,7 @@
     const existing = document.querySelector(".popover");
     if (existing) existing.remove();
     clearHighlight();
+    lastHandledSelectionKey = null;
   }
 
   function openCreatePopover(x, y, position) {
@@ -252,9 +293,12 @@
     });
   }
 
-  function openEditPopover(x, y, note) {
+  // opts: {x, y} to position explicitly (e.g. next to the clicked marker), or
+  // {scroll: true} to scroll the highlight into view and derive x/y from where
+  // it actually landed once scrolled (this is what makes "open from list" work).
+  function openEditPopover(note, opts) {
     closePopover();
-    highlightPosition(note.position, { scroll: false });
+    const highlight = highlightPosition(note.position, { scroll: !!(opts && opts.scroll) });
 
     const pop = document.createElement("div");
     pop.className = "popover";
@@ -262,7 +306,11 @@
     const contextPreview = [position.context_before, position.selected_text ? `» ${position.selected_text} «` : "", position.context_after]
       .filter(Boolean)
       .join(" ");
+    const missingHint = highlight && highlight.missing
+      ? '<div class="popover-hint">Anchor not found in the current document — showing the note anyway.</div>'
+      : "";
     pop.innerHTML = `
+      ${missingHint}
       <div class="popover-context">${escapeHtml(contextPreview)}</div>
       <textarea>${escapeHtml(note.note)}</textarea>
       <div class="popover-actions">
@@ -274,6 +322,14 @@
       </div>
     `;
     document.body.appendChild(pop);
+
+    let x = opts && opts.x != null ? opts.x : null;
+    let y = opts && opts.y != null ? opts.y : null;
+    if (x == null || y == null) {
+      const rect = highlight && highlight.anchorRect ? highlight.anchorRect() : null;
+      x = rect ? rect.right + 12 : window.innerWidth / 2 - 150;
+      y = rect ? rect.top : window.innerHeight / 2 - 100;
+    }
     positionPopover(pop, x, y);
 
     pop.querySelector('[data-action="delete"]').addEventListener("click", async () => {
@@ -304,10 +360,11 @@
   }
 
   function positionPopover(pop, x, y) {
-    const maxLeft = window.innerWidth - 320;
-    const maxTop = window.scrollY + window.innerHeight - 220;
-    pop.style.left = Math.min(x, maxLeft) + "px";
-    pop.style.top = Math.min(y, maxTop) + "px";
+    const m = 8;
+    const w = pop.offsetWidth || 300;
+    const h = pop.offsetHeight || 220;
+    pop.style.left = clamp(x, m, Math.max(m, window.innerWidth - w - m)) + "px";
+    pop.style.top = clamp(y, m, Math.max(m, window.innerHeight - h - m)) + "px";
   }
 
   document.addEventListener("click", (e) => {
@@ -326,14 +383,7 @@
   // ---------- Sidebar: note list ----------
 
   function openNoteFromList(note) {
-    const marker = document.querySelector(`.note-marker[data-note-id="${note.id}"]`);
-    if (marker) {
-      marker.scrollIntoView({ behavior: "smooth", block: "center" });
-      const rect = marker.getBoundingClientRect();
-      openEditPopover(rect.right + window.scrollX + 8, rect.top + window.scrollY, note);
-    } else {
-      openEditPopover(window.scrollX + 340, window.scrollY + 120, note);
-    }
+    openEditPopover(note, { scroll: true });
   }
 
   function renderNoteList(notes) {
@@ -640,7 +690,7 @@
       },
       buildAnchor(block)
     );
-    openCreatePopover(e.pageX + 12, e.pageY, position);
+    openCreatePopover(e.clientX + 12, e.clientY, position);
   }
 
   function handleBlockSelection(sel) {
@@ -669,7 +719,7 @@
       buildAnchor(block)
     );
     const rect = range.getBoundingClientRect();
-    openCreatePopover(rect.left + window.scrollX, rect.bottom + window.scrollY + 8, position);
+    openCreatePopover(rect.left, rect.bottom + 8, position);
     return true;
   }
 
@@ -694,7 +744,7 @@
     marker.addEventListener("click", (e) => {
       e.stopPropagation();
       const r = marker.getBoundingClientRect();
-      openEditPopover(r.right + window.scrollX + 8, r.top + window.scrollY, notesById[note.id]);
+      openEditPopover(notesById[note.id], { x: r.right + 8, y: r.top });
     });
     block.appendChild(marker);
   }
@@ -784,70 +834,160 @@
     });
   }
 
-  async function renderTextLayer(page, viewport, container) {
-    const textContent = await page.getTextContent();
-    container.style.width = viewport.width + "px";
-    container.style.height = viewport.height + "px";
-    textContent.items.forEach((item) => {
-      const tx = pdfjsLib.Util.transform(
-        pdfjsLib.Util.transform(viewport.transform, item.transform),
-        [1, 0, 0, -1, 0, 0]
-      );
-      const fontSize = Math.hypot(tx[2], tx[3]);
-      const angle = Math.atan2(tx[1], tx[0]);
-      const span = document.createElement("span");
-      span.textContent = item.str;
-      span.style.left = tx[4] + "px";
-      span.style.top = tx[5] - fontSize + "px";
-      span.style.fontSize = fontSize + "px";
-      if (angle !== 0) {
-        span.style.transform = `rotate(${angle}rad)`;
-        span.style.transformOrigin = "0% 0%";
+  // Per-page state: the pdf.js-owned text divs (in item order — this is what
+  // makes old anchor_span_index values keep working), plus geometry derived
+  // from them. Lazily created so any function can reach it via the wrap.
+  function pdfPageState(wrap) {
+    if (!wrap.__mk) {
+      wrap.__mk = {
+        textDivs: [],
+        textDivProperties: new WeakMap(),
+        divIndex: new Map(),
+        items: [],
+        itemGeom: [],
+        paragraphs: [],
+        flatIndex: null,
+        renderTask: null,
+        textLayerTask: null,
+      };
+    }
+    return wrap.__mk;
+  }
+
+  function pdfTextDivs(wrap) {
+    return pdfPageState(wrap).textDivs;
+  }
+
+  function cancelPdfPageTasks(wrap) {
+    const st = wrap.__mk;
+    if (!st) return;
+    if (st.renderTask) {
+      try { st.renderTask.cancel(); } catch (err) { /* ignore */ }
+      st.renderTask = null;
+    }
+    if (st.textLayerTask) {
+      try { st.textLayerTask.cancel(); } catch (err) { /* ignore */ }
+      st.textLayerTask = null;
+    }
+  }
+
+  // Verbatim port of pdf.js's TextLayerBuilder#bindMouse (web/text_layer_builder.js
+  // @ v3.11.174, minus the clipboard handler, which we don't need): widens the
+  // hit-area for drag-selection down to wherever the mouse actually is, so
+  // dragging up past the last rendered line doesn't flicker/stall.
+  function bindTextLayerMouse(container) {
+    container.addEventListener("mousedown", (evt) => {
+      const end = container.querySelector(".endOfContent");
+      if (!end) return;
+      const adjustTop = evt.target !== container;
+      if (adjustTop) {
+        const divBounds = container.getBoundingClientRect();
+        const r = Math.max(0, (evt.pageY - divBounds.top) / divBounds.height);
+        end.style.top = (r * 100).toFixed(2) + "%";
       }
-      container.appendChild(span);
+      end.classList.add("active");
+    });
+    container.addEventListener("mouseup", () => {
+      const end = container.querySelector(".endOfContent");
+      if (!end) return;
+      end.style.top = "";
+      end.classList.remove("active");
     });
   }
 
-  // Text items from pdf.js rarely line up with real paragraphs, so group
-  // them into visual lines (by top position) and then group lines into
-  // paragraphs by looking for gaps between lines that are noticeably larger
-  // than the typical line spacing on the page.
-  function computeParagraphs(pageWrap) {
-    const spans = pdfPageSpans(pageWrap);
-    if (!spans.length) return [];
+  async function buildPdfTextLayer(page, viewport, container, wrap) {
+    const st = pdfPageState(wrap);
+    cancelPdfPageTasks(wrap);
+    container.textContent = "";
+    wrap.style.setProperty("--scale-factor", pdfScale);
 
-    const withPos = spans.map((span) => ({
-      span,
-      top: parseFloat(span.style.top) || 0,
-      left: parseFloat(span.style.left) || 0,
-    }));
-    withPos.sort((a, b) => a.top - b.top || a.left - b.left);
+    const textContent = await page.getTextContent();
+    st.textDivs = [];
+    st.textDivProperties = new WeakMap();
+
+    const task = pdfjsLib.renderTextLayer({
+      textContentSource: textContent,
+      container,
+      viewport,
+      textDivs: st.textDivs,
+      textDivProperties: st.textDivProperties,
+      textContentItemsStr: [],
+      isOffscreenCanvasSupported: true,
+    });
+    st.textLayerTask = task;
+    await task.promise;
+    st.textLayerTask = null;
+
+    const eoc = document.createElement("div");
+    eoc.className = "endOfContent";
+    container.appendChild(eoc);
+    bindTextLayerMouse(container);
+
+    st.divIndex = new Map();
+    st.textDivs.forEach((d, i) => st.divIndex.set(d, i));
+    st.items = textContent.items;
+    st.itemGeom = buildItemGeom(textContent.items, viewport);
+    st.paragraphs = computeParagraphs(st.itemGeom);
+    st.flatIndex = null;
+  }
+
+  // Same math pdf.js itself uses internally (src/display/text_layer.js,
+  // TextLayerRenderTask._transform) to place each text item, but computed in
+  // unscaled PDF units via viewport.rawDims instead of CSS pixels. That keeps
+  // paragraph/line geometry valid across zoom without ever re-reading the DOM.
+  function buildItemGeom(items, viewport) {
+    const { pageWidth, pageHeight, pageX, pageY } = viewport.rawDims;
+    const T = [1, 0, 0, -1, -pageX, pageY + pageHeight];
+    const out = [];
+    items.forEach((item, i) => {
+      if (item.str === undefined) {
+        out.push(null);
+        return;
+      }
+      const tx = pdfjsLib.Util.transform(T, item.transform);
+      const height = Math.hypot(tx[2], tx[3]);
+      out.push({ i, left: tx[4], baseline: tx[5], height, str: item.str });
+    });
+    return out;
+  }
+
+  // Groups text items into visual lines (by baseline proximity, relative to
+  // font height) and lines into paragraphs (gaps noticeably larger than the
+  // typical line spacing). Same heuristic as before, just index-based instead
+  // of reading live span.style.top/left (which pdf.js now expresses as percent
+  // / calc(var(--scale-factor)*...) strings, not raw pixels).
+  function computeParagraphs(itemGeom) {
+    const valid = itemGeom.filter((g) => g && g.str.trim().length > 0);
+    if (!valid.length) return [];
+
+    const sorted = valid.slice().sort((a, b) => a.baseline - b.baseline || a.left - b.left);
 
     const lines = [];
     let currentLine = [];
-    let currentTop = null;
-    withPos.forEach((item) => {
-      if (currentTop === null || Math.abs(item.top - currentTop) < 3) {
-        currentLine.push(item);
-        if (currentTop === null) currentTop = item.top;
+    let currentBaseline = null;
+    sorted.forEach((g) => {
+      const threshold = Math.max(1.5, 0.35 * g.height);
+      if (currentBaseline === null || Math.abs(g.baseline - currentBaseline) < threshold) {
+        currentLine.push(g);
+        if (currentBaseline === null) currentBaseline = g.baseline;
       } else {
         lines.push(currentLine);
-        currentLine = [item];
-        currentTop = item.top;
+        currentLine = [g];
+        currentBaseline = g.baseline;
       }
     });
     if (currentLine.length) lines.push(currentLine);
 
-    const lineTops = lines.map((line) => Math.min(...line.map((i) => i.top)));
+    const lineBaselines = lines.map((line) => line[0].baseline);
     const gaps = [];
-    for (let i = 1; i < lineTops.length; i++) gaps.push(lineTops[i] - lineTops[i - 1]);
+    for (let i = 1; i < lineBaselines.length; i++) gaps.push(lineBaselines[i] - lineBaselines[i - 1]);
     const sortedGaps = gaps.slice().sort((a, b) => a - b);
     const medianGap = sortedGaps.length ? sortedGaps[Math.floor(sortedGaps.length / 2)] : 0;
 
     const paragraphLines = [];
     let current = [lines[0]];
     for (let i = 1; i < lines.length; i++) {
-      const gap = lineTops[i] - lineTops[i - 1];
+      const gap = lineBaselines[i] - lineBaselines[i - 1];
       if (medianGap > 0 && gap > medianGap * 1.6) {
         paragraphLines.push(current);
         current = [lines[i]];
@@ -857,10 +997,22 @@
     }
     paragraphLines.push(current);
 
-    return paragraphLines.map((paraLines) => ({
-      spans: paraLines.flatMap((line) => line.map((i) => i.span)),
-      lines: paraLines.map((line) => line.map((i) => i.span)),
-    }));
+    return paragraphLines.map((paraLines) => {
+      const indices = paraLines.flatMap((line) => line.map((g) => g.i));
+      return {
+        startIdx: Math.min(...indices),
+        endIdx: Math.max(...indices),
+        indices,
+        lines: paraLines.map((line) => line.map((g) => g.i)),
+      };
+    });
+  }
+
+  function paragraphForIndex(paragraphs, idx) {
+    for (const p of paragraphs) {
+      if (idx >= p.startIdx && idx <= p.endIdx && p.indices.includes(idx)) return p;
+    }
+    return null;
   }
 
   function boxFromRects(rects, pageRect, className) {
@@ -877,31 +1029,98 @@
     return box;
   }
 
-  function attachPdfHoverHighlight(pageWrap) {
-    const highlightLayer = pageWrap.querySelector(".pdf-highlight-layer");
-    const textLayer = pageWrap.querySelector(".pdf-text-layer");
-    let hoverBoxes = [];
+  function boxFromRect(rect, pageRect, className) {
+    const box = document.createElement("div");
+    box.className = className;
+    box.style.left = rect.left - pageRect.left + "px";
+    box.style.top = rect.top - pageRect.top + "px";
+    box.style.width = rect.width + "px";
+    box.style.height = rect.height + "px";
+    return box;
+  }
 
-    function clearHover() {
+  // Range.getClientRects() emits one rect per text fragment, which can mean
+  // several rects per visual line — merge those into a single bar per line so
+  // the highlight doesn't show visible seams.
+  function mergeRectsByLine(rects) {
+    const sorted = rects.slice().sort((a, b) => a.top - b.top);
+    const groups = [];
+    sorted.forEach((r) => {
+      const last = groups[groups.length - 1];
+      if (last && r.top < last.top + last.height * 0.5) {
+        last.rects.push(r);
+        last.top = Math.min(last.top, r.top);
+        last.height = Math.max(last.height, r.height);
+      } else {
+        groups.push({ top: r.top, height: r.height, rects: [r] });
+      }
+    });
+    return groups.map((g) => {
+      const left = Math.min(...g.rects.map((r) => r.left));
+      const right = Math.max(...g.rects.map((r) => r.right));
+      const top = Math.min(...g.rects.map((r) => r.top));
+      const bottom = Math.max(...g.rects.map((r) => r.bottom));
+      return { left, top, right, bottom, width: right - left, height: bottom - top };
+    });
+  }
+
+  function paintRangeBoxes(range, wrap, layer, className) {
+    const pageRect = wrap.getBoundingClientRect();
+    const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0.5 && r.height > 0.5);
+    return mergeRectsByLine(rects).map((r) => {
+      const box = boxFromRect(r, pageRect, className);
+      layer.appendChild(box);
+      return box;
+    });
+  }
+
+  function attachPdfHoverHighlight(wrap) {
+    const st = pdfPageState(wrap);
+    const highlightLayer = wrap.querySelector(".pdf-highlight-layer");
+    const textLayer = wrap.querySelector(".pdf-text-layer");
+    let hoverBoxes = [];
+    let hoveredIdx = null;
+    let pendingFrame = null;
+
+    function clearHoverBoxes() {
       hoverBoxes.forEach((b) => b.remove());
       hoverBoxes = [];
     }
 
-    textLayer.addEventListener("mousemove", (e) => {
-      if (e.target.tagName !== "SPAN") {
-        clearHover();
-        return;
-      }
-      clearHover();
-      const paragraphs = pageWrap.__mkParagraphs || [];
-      const para = paragraphs.find((p) => p.spans.includes(e.target));
+    function clearHover() {
+      clearHoverBoxes();
+      hoveredIdx = null;
+    }
+
+    function paintHoverFor(idx) {
+      clearHoverBoxes();
+      const para = paragraphForIndex(st.paragraphs, idx);
       if (!para) return;
-      const pageRect = pageWrap.getBoundingClientRect();
-      para.lines.forEach((lineSpans) => {
-        const rects = lineSpans.map((s) => s.getBoundingClientRect());
+      const pageRect = wrap.getBoundingClientRect();
+      para.lines.forEach((lineIdxs) => {
+        const rects = lineIdxs
+          .map((i) => st.textDivs[i])
+          .filter((d) => d && d.isConnected)
+          .map((d) => d.getBoundingClientRect());
+        if (!rects.length) return;
         const box = boxFromRects(rects, pageRect, "pdf-highlight-box hover");
         highlightLayer.appendChild(box);
         hoverBoxes.push(box);
+      });
+    }
+
+    textLayer.addEventListener("mousemove", (e) => {
+      if (e.target.tagName !== "SPAN") {
+        if (hoveredIdx !== null) clearHover();
+        return;
+      }
+      const idx = st.divIndex.get(e.target);
+      if (idx === undefined || idx === hoveredIdx) return;
+      hoveredIdx = idx;
+      if (pendingFrame) return;
+      pendingFrame = requestAnimationFrame(() => {
+        pendingFrame = null;
+        paintHoverFor(hoveredIdx);
       });
     });
     textLayer.addEventListener("mouseleave", clearHover);
@@ -912,12 +1131,18 @@
     wrap.className = "pdf-page-wrap";
     wrap.id = `pdf-page-${pageNum}`;
     wrap.dataset.pageNumber = pageNum;
-    wrap.style.width = viewport.width + "px";
-    wrap.style.height = viewport.height + "px";
+    const w = Math.floor(viewport.width);
+    const h = Math.floor(viewport.height);
+    wrap.style.width = w + "px";
+    wrap.style.height = h + "px";
+    wrap.style.setProperty("--scale-factor", pdfScale);
 
+    const dpr = window.devicePixelRatio || 1;
     const canvas = document.createElement("canvas");
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+    canvas.style.width = w + "px";
+    canvas.style.height = h + "px";
     wrap.appendChild(canvas);
 
     const highlightLayer = document.createElement("div");
@@ -937,9 +1162,19 @@
     const wrap = createPdfPageWrap(pageNum, viewport);
     docPane.appendChild(wrap);
 
-    await page.render({ canvasContext: wrap.querySelector("canvas").getContext("2d"), viewport }).promise;
-    await renderTextLayer(page, viewport, wrap.querySelector(".pdf-text-layer"));
-    wrap.__mkParagraphs = computeParagraphs(wrap);
+    const st = pdfPageState(wrap);
+    const canvas = wrap.querySelector("canvas");
+    const dpr = window.devicePixelRatio || 1;
+    const renderTask = page.render({
+      canvasContext: canvas.getContext("2d"),
+      viewport,
+      transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null,
+    });
+    st.renderTask = renderTask;
+    await renderTask.promise;
+    st.renderTask = null;
+
+    await buildPdfTextLayer(page, viewport, wrap.querySelector(".pdf-text-layer"), wrap);
     attachPdfHoverHighlight(wrap);
     return wrap;
   }
@@ -958,25 +1193,55 @@
   // page-wrap elements themselves), so the scrollable area never collapses
   // back to zero height and the viewport doesn't visibly jump to the top
   // while zooming.
+  // Re-renders the canvas in place and asks pdf.js to rescale the existing
+  // text divs (pdfjsLib.updateTextLayer) instead of rebuilding the text
+  // layer from scratch. Widths/heights are calc(var(--scale-factor)*...)
+  // already, so they track the new --scale-factor automatically; itemGeom
+  // and paragraphs are computed in unscaled units (see buildItemGeom) so
+  // they stay valid across zoom without recomputation either.
   async function updatePdfPageInPlace(pageNum) {
     const wrap = document.getElementById(`pdf-page-${pageNum}`);
     if (!wrap) return renderPdfPage(pageNum);
 
+    cancelPdfPageTasks(wrap);
+    const st = pdfPageState(wrap);
+
     const page = await pdfDoc.getPage(pageNum);
     const viewport = page.getViewport({ scale: pdfScale });
+    const w = Math.floor(viewport.width);
+    const h = Math.floor(viewport.height);
 
-    wrap.style.width = viewport.width + "px";
-    wrap.style.height = viewport.height + "px";
+    wrap.style.width = w + "px";
+    wrap.style.height = h + "px";
+    wrap.style.setProperty("--scale-factor", pdfScale);
 
+    const dpr = window.devicePixelRatio || 1;
     const canvas = wrap.querySelector("canvas");
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+    canvas.style.width = w + "px";
+    canvas.style.height = h + "px";
 
-    const textLayer = wrap.querySelector(".pdf-text-layer");
-    textLayer.innerHTML = "";
-    await renderTextLayer(page, viewport, textLayer);
-    wrap.__mkParagraphs = computeParagraphs(wrap);
+    const renderTask = page.render({
+      canvasContext: canvas.getContext("2d"),
+      viewport,
+      transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null,
+    });
+    st.renderTask = renderTask;
+    await renderTask.promise;
+    st.renderTask = null;
+
+    if (st.textDivs.length) {
+      pdfjsLib.updateTextLayer({
+        container: wrap.querySelector(".pdf-text-layer"),
+        viewport,
+        textDivs: st.textDivs,
+        textDivProperties: st.textDivProperties,
+        isOffscreenCanvasSupported: true,
+        mustRescale: true,
+        mustRotate: false,
+      });
+    }
 
     wrap.querySelector(".pdf-highlight-layer").innerHTML = "";
     wrap.querySelectorAll(".note-marker").forEach((m) => m.remove());
@@ -1024,41 +1289,73 @@
 
   async function rerenderPdfPreservingPosition() {
     const scrollState = getScrollState();
+    const positionToRestore = activeHighlightPosition;
     const finished = await updateAllPdfPagesInPlace();
     if (!finished) return;
     Object.values(notesById).forEach(placeMarkerForNote);
     restoreScrollState(scrollState);
+    if (positionToRestore) highlightPosition(positionToRestore, { scroll: false });
   }
 
-  function pdfPageSpans(pageWrap) {
-    return Array.from(pageWrap.querySelectorAll(".pdf-text-layer span"));
+  function rectDistance(r, x, y) {
+    const dx = Math.max(r.left - x, 0, x - r.right);
+    const dy = Math.max(r.top - y, 0, y - r.bottom);
+    return Math.hypot(dx, dy);
   }
 
-  function nearestSpanToPoint(spans, x, y) {
+  function nearestTextDivToPoint(wrap, x, y, maxDist) {
+    const divs = pdfTextDivs(wrap);
     let best = null;
+    let bestIdx = -1;
     let bestDist = Infinity;
-    spans.forEach((span) => {
-      const r = span.getBoundingClientRect();
-      const cx = r.left + r.width / 2;
-      const cy = r.top + r.height / 2;
-      const d = Math.hypot(cx - x, cy - y);
+    divs.forEach((div, i) => {
+      if (!div || !div.isConnected || !div.textContent || !div.textContent.trim()) return;
+      const d = rectDistance(div.getBoundingClientRect(), x, y);
       if (d < bestDist) {
         bestDist = d;
-        best = span;
+        best = div;
+        bestIdx = i;
       }
     });
-    return best;
+    if (!best || (maxDist != null && bestDist > maxDist)) return null;
+    return { div: best, idx: bestIdx };
+  }
+
+  function caretAnchorInPdf(wrap, clientX, clientY) {
+    const st = pdfPageState(wrap);
+    const caret = getCaretInfoFromPoint(clientX, clientY);
+    if (caret) {
+      const el = caret.node.nodeType === 3 ? caret.node.parentElement : caret.node;
+      const span = el ? el.closest("span") : null;
+      if (span && wrap.contains(span)) {
+        const idx = st.divIndex.get(span);
+        if (idx !== undefined) {
+          return { idx, off: clamp(caret.offset, 0, (span.textContent || "").length) };
+        }
+      }
+    }
+    const nearest = nearestTextDivToPoint(wrap, clientX, clientY, 28 * pdfScale);
+    if (!nearest) return null;
+    return { idx: nearest.idx, off: 0 };
   }
 
   function handlePdfClick(e) {
     const pageWrap = e.target.closest(".pdf-page-wrap");
     if (!pageWrap) return;
     const pageNum = parseInt(pageWrap.dataset.pageNumber, 10);
-    const spans = pdfPageSpans(pageWrap);
-    const nearest = nearestSpanToPoint(spans, e.clientX, e.clientY);
-    const idx = nearest ? spans.indexOf(nearest) : -1;
-    const contextAfterWords = idx >= 0 ? spans.slice(idx, idx + 8).map((s) => s.textContent).join(" ") : "";
-    const contextBeforeWords = idx >= 0 ? spans.slice(Math.max(0, idx - 8), idx).map((s) => s.textContent).join(" ") : "";
+    const st = pdfPageState(pageWrap);
+    const anchor = caretAnchorInPdf(pageWrap, e.clientX, e.clientY);
+    if (!anchor) return; // click was too far from any text (e.g. empty margin)
+
+    const div = st.textDivs[anchor.idx];
+    const text = div ? div.textContent : "";
+    const bounds = wordBoundsAt(text, anchor.off);
+    const anchorText = bounds.word || text;
+    const charOffset = bounds.word ? bounds.start : 0;
+    const charLength = Math.max(bounds.word ? bounds.end - bounds.start : text.length, 1);
+
+    const contextAfterWords = st.textDivs.slice(anchor.idx, anchor.idx + 8).map((d) => d.textContent).join(" ");
+    const contextBeforeWords = st.textDivs.slice(Math.max(0, anchor.idx - 8), anchor.idx).map((d) => d.textContent).join(" ");
     const headingPath = pdfHeadingPathForPage(pageNum);
 
     const quote = [shortWords(contextBeforeWords, 4, true), shortWords(contextAfterWords, 6, false)]
@@ -1070,36 +1367,66 @@
       page: pageNum,
       chapter: headingPath.length ? headingPath[headingPath.length - 1] : null,
       heading_path: headingPath,
-      anchor_text: nearest ? nearest.textContent : "",
-      anchor_span_index: idx >= 0 ? idx : null,
+      anchor_text: anchorText,
+      anchor_span_index: anchor.idx,
+      anchor_span_index_end: anchor.idx,
+      char_offset: charOffset,
+      char_length: charLength,
+      char_offset_end: charOffset + charLength,
+      char_base: "span",
       context_before: contextBeforeWords.slice(-150),
       context_after: contextAfterWords.slice(0, 150),
       quote: quote,
     };
-    openCreatePopover(e.pageX + 12, e.pageY, position);
+    openCreatePopover(e.clientX + 12, e.clientY, position);
   }
 
-  function handlePdfSelection(sel) {
+  // Resolves a live browser selection to page-relative text-div indices +
+  // char offsets. Doesn't trust range.startContainer/endContainer directly
+  // (with the pdf.js .endOfContent div present, the end container is often
+  // that div rather than a text span) — instead walks textDivs and asks the
+  // range which ones it actually intersects.
+  function anchorFromSelection(sel) {
     const range = sel.getRangeAt(0);
     const startEl = range.startContainer.nodeType === 3 ? range.startContainer.parentElement : range.startContainer;
+    const wrap = startEl ? startEl.closest(".pdf-page-wrap") : null;
+    if (!wrap) return null;
     const endEl = range.endContainer.nodeType === 3 ? range.endContainer.parentElement : range.endContainer;
-    const pageWrap = startEl.closest(".pdf-page-wrap");
-    if (!pageWrap) return false;
+    const endWrap = endEl ? endEl.closest(".pdf-page-wrap") : null;
+    if (endWrap && endWrap !== wrap) return { crossPage: true };
 
-    const spans = pdfPageSpans(pageWrap);
-    const startSpan = startEl.closest("span");
-    const endSpan = endEl.closest("span");
-    const startIdx = startSpan ? spans.indexOf(startSpan) : -1;
-    const endIdx = endSpan ? spans.indexOf(endSpan) : -1;
+    const st = pdfPageState(wrap);
+    let startIdx = -1;
+    let endIdx = -1;
+    st.textDivs.forEach((div, i) => {
+      if (!div || !div.isConnected || !range.intersectsNode(div)) return;
+      if (startIdx < 0) startIdx = i;
+      endIdx = i;
+    });
+    if (startIdx < 0) return null;
 
-    const pageNum = parseInt(pageWrap.dataset.pageNumber, 10);
+    const sDiv = st.textDivs[startIdx];
+    const eDiv = st.textDivs[endIdx];
+    const startOff = sDiv.contains(range.startContainer) ? range.startOffset : 0;
+    const endOff = eDiv.contains(range.endContainer) ? range.endOffset : (eDiv.textContent || "").length;
+
+    return { wrap, startIdx, startOff, endIdx, endOff, text: sel.toString() };
+  }
+
+  function handlePdfSelection(sel, anchor) {
+    if (anchor.crossPage) {
+      showToast("Select within a single page to add a note.");
+      return true;
+    }
+
+    const wrap = anchor.wrap;
+    const st = pdfPageState(wrap);
+    const pageNum = parseInt(wrap.dataset.pageNumber, 10);
     const selectedText = sel.toString();
-    const fullText = spans.map((s) => s.textContent).join(" ");
-    const probe = selectedText.split("\n")[0].slice(0, 30);
-    const idxText = probe ? fullText.indexOf(probe) : -1;
-    const start = idxText >= 0 ? idxText : 0;
-    const end = start + selectedText.length;
     const headingPath = pdfHeadingPathForPage(pageNum);
+
+    const contextBeforeWords = st.textDivs.slice(Math.max(0, anchor.startIdx - 8), anchor.startIdx).map((d) => d.textContent).join(" ");
+    const contextAfterWords = st.textDivs.slice(anchor.endIdx + 1, anchor.endIdx + 9).map((d) => d.textContent).join(" ");
 
     const position = {
       type: "selection",
@@ -1107,97 +1434,278 @@
       chapter: headingPath.length ? headingPath[headingPath.length - 1] : null,
       heading_path: headingPath,
       selected_text: selectedText,
-      anchor_span_index: startIdx >= 0 ? startIdx : null,
-      anchor_span_index_end: endIdx >= 0 ? endIdx : startIdx >= 0 ? startIdx : null,
-      context_before: fullText.slice(Math.max(0, start - 150), start),
-      context_after: fullText.slice(end, end + 150),
+      anchor_span_index: anchor.startIdx,
+      anchor_span_index_end: anchor.endIdx,
+      char_offset: anchor.startOff,
+      char_offset_end: anchor.endOff,
+      char_base: "span",
+      context_before: contextBeforeWords.slice(-150),
+      context_after: contextAfterWords.slice(0, 150),
       quote: selectedText,
     };
-    const rect = range.getBoundingClientRect();
-    openCreatePopover(rect.left + window.scrollX, rect.bottom + window.scrollY + 8, position);
+    const rect = sel.getRangeAt(0).getBoundingClientRect();
+    openCreatePopover(rect.left, rect.bottom + 8, position);
     return true;
   }
 
-  // Same idea as locateAnchorInBlock: prefer the span index captured at
-  // creation time, but fall back to a text search so markers/highlights
-  // still work for older notes.
-  function locatePdfAnchor(pageWrap, position) {
-    const spans = pdfPageSpans(pageWrap);
-    if (position.anchor_span_index != null && spans[position.anchor_span_index]) {
-      const start = position.anchor_span_index;
-      const validEnd = position.anchor_span_index_end != null && spans[position.anchor_span_index_end];
-      const end = validEnd ? position.anchor_span_index_end : start;
-      return { spans, start, end: end >= start ? end : start };
+  function normalizeWs(s) {
+    return (s || "").replace(/\s+/g, " ").trim();
+  }
+
+  // Text between two (idx, off) boundaries, used to verify a resolved anchor
+  // still points at the text it was created from.
+  function anchorPlainText(wrap, anchor) {
+    const divs = pdfTextDivs(wrap);
+    if (anchor.startIdx === anchor.endIdx) {
+      const d = divs[anchor.startIdx];
+      return d ? d.textContent.slice(anchor.startOff, anchor.endOff) : "";
     }
-    const target = (position.selected_text || position.anchor_text || "").split(/\s+/)[0];
-    if (target) {
-      const idx = spans.findIndex((s) => s.textContent.includes(target));
-      if (idx >= 0) return { spans, start: idx, end: idx };
+    const parts = [];
+    for (let i = anchor.startIdx; i <= anchor.endIdx; i++) {
+      const d = divs[i];
+      if (!d) continue;
+      const text = d.textContent;
+      if (i === anchor.startIdx) parts.push(text.slice(anchor.startOff));
+      else if (i === anchor.endIdx) parts.push(text.slice(0, anchor.endOff));
+      else parts.push(text);
+    }
+    return parts.join("");
+  }
+
+  // Whitespace-normalized page text + a char -> {idx, off} map, built once per
+  // page and cached, for the text-search fallback tier.
+  function buildPageFlatIndex(wrap) {
+    const st = pdfPageState(wrap);
+    if (st.flatIndex) return st.flatIndex;
+    let text = "";
+    const pos = [];
+    let lastWasSpace = true;
+    st.textDivs.forEach((d, i) => {
+      if (!d) return;
+      const t = d.textContent || "";
+      if (!lastWasSpace) {
+        text += " ";
+        pos.push({ idx: i, off: 0 });
+        lastWasSpace = true;
+      }
+      for (let off = 0; off < t.length; off++) {
+        const ch = t[off];
+        if (/\s/.test(ch)) {
+          if (lastWasSpace) continue;
+          text += " ";
+          pos.push({ idx: i, off });
+          lastWasSpace = true;
+        } else {
+          text += ch;
+          pos.push({ idx: i, off });
+          lastWasSpace = false;
+        }
+      }
+    });
+    st.flatIndex = { text, pos };
+    return st.flatIndex;
+  }
+
+  function locatePdfAnchorByText(wrap, position) {
+    const { text, pos } = buildPageFlatIndex(wrap);
+    const needles = [];
+    if (position.selected_text) {
+      const t = normalizeWs(position.selected_text);
+      if (t) needles.push(t);
+      if (t.length > 40) needles.push(t.slice(0, 40));
+    }
+    if (position.anchor_text) {
+      const t = normalizeWs(position.anchor_text);
+      if (t) needles.push(t);
+      const first = t.split(" ")[0];
+      if (first) needles.push(first);
+    }
+    for (const needle of needles) {
+      if (!needle) continue;
+      const idx = text.indexOf(needle);
+      if (idx < 0) continue;
+      const startPos = pos[idx];
+      const endPos = pos[Math.min(idx + needle.length - 1, pos.length - 1)];
+      if (!startPos || !endPos) continue;
+      return { startIdx: startPos.idx, startOff: startPos.off, endIdx: endPos.idx, endOff: endPos.off + 1, tier: 3 };
     }
     return null;
   }
 
-  function placePdfMarker(note) {
-    const pageWrap = document.getElementById(`pdf-page-${note.position.page}`);
-    if (!pageWrap) return;
-    const anchor = locatePdfAnchor(pageWrap, note.position);
-    const span = anchor ? anchor.spans[anchor.start] : null;
+  function normalizeAnchorOrder(a) {
+    if (a.startIdx > a.endIdx || (a.startIdx === a.endIdx && a.startOff > a.endOff)) {
+      return { startIdx: a.endIdx, startOff: a.endOff, endIdx: a.startIdx, endOff: a.startOff, tier: a.tier };
+    }
+    return a;
+  }
 
-    const pageRect = pageWrap.getBoundingClientRect();
-    const rawTop = span ? span.getBoundingClientRect().top - pageRect.top : 4;
-    const top = avoidMarkerCollision(pageWrap, rawTop);
+  // 1: v2 exact (char_base:"span") anchor, verified against selected_text/
+  //    anchor_text; falls back to a text search if verification fails.
+  // 2: legacy index-only note (pre char_offset) — text search first, since
+  //    anchor_span_index_end on old selections often just repeats the start
+  //    and would otherwise highlight a single item instead of the phrase.
+  // 3: null — caller shows an explicit "anchor not found" state.
+  function locatePdfAnchor(wrap, position) {
+    const divs = pdfTextDivs(wrap);
+    if (!divs.length) return null;
+
+    const isV2 = position.char_base === "span";
+
+    if (isV2 && position.anchor_span_index != null && divs[position.anchor_span_index]) {
+      const startIdx = position.anchor_span_index;
+      const startLen = (divs[startIdx].textContent || "").length;
+      const startOff = clamp(position.char_offset || 0, 0, startLen);
+      const hasEnd = position.anchor_span_index_end != null && divs[position.anchor_span_index_end];
+      const endIdx = hasEnd ? position.anchor_span_index_end : startIdx;
+      const endLen = (divs[endIdx].textContent || "").length;
+      const endOff = position.char_offset_end != null
+        ? clamp(position.char_offset_end, 0, endLen)
+        : position.type === "point"
+          ? clamp(startOff + (position.char_length || 1), 0, endLen)
+          : endLen;
+      const tier1 = normalizeAnchorOrder({ startIdx, startOff, endIdx, endOff, tier: 1 });
+
+      const expected = normalizeWs(position.selected_text || position.anchor_text || "");
+      if (!expected || normalizeWs(anchorPlainText(wrap, tier1)) === expected) return tier1;
+      return locatePdfAnchorByText(wrap, position) || tier1;
+    }
+
+    const viaText = locatePdfAnchorByText(wrap, position);
+    if (viaText) return viaText;
+
+    if (position.anchor_span_index != null && divs[position.anchor_span_index]) {
+      const startIdx = position.anchor_span_index;
+      const hasEnd = position.anchor_span_index_end != null
+        && divs[position.anchor_span_index_end]
+        && position.anchor_span_index_end >= startIdx;
+      const endIdx = hasEnd ? position.anchor_span_index_end : startIdx;
+      return { startIdx, startOff: 0, endIdx, endOff: (divs[endIdx].textContent || "").length, tier: 2 };
+    }
+
+    return null;
+  }
+
+  function connectedDivIndex(divs, idx, dir) {
+    for (let i = idx; i >= 0 && i < divs.length; i += dir) {
+      const d = divs[i];
+      if (d && d.isConnected && d.firstChild) return i;
+    }
+    for (let i = idx; i >= 0 && i < divs.length; i -= dir) {
+      const d = divs[i];
+      if (d && d.isConnected && d.firstChild) return i;
+    }
+    return -1;
+  }
+
+  // Builds a real DOM Range from a resolved anchor. Handles: the target span
+  // being detached (empty-string pdf.js items aren't appended to the DOM —
+  // walk to the nearest connected one), offsets past the text length (clamp),
+  // start > end (comparePoint + swap), and a collapsed result (widen by one
+  // character, or select the whole div as a last resort).
+  function pdfRangeFromAnchor(wrap, anchor) {
+    const divs = pdfTextDivs(wrap);
+    const sIdx = connectedDivIndex(divs, anchor.startIdx, 1);
+    const eIdx = connectedDivIndex(divs, anchor.endIdx, -1);
+    if (sIdx < 0 || eIdx < 0) return null;
+
+    const sDiv = divs[sIdx];
+    const eDiv = divs[eIdx];
+    const sNode = sDiv.firstChild;
+    const eNode = eDiv.firstChild;
+    const sOff = clamp(sIdx === anchor.startIdx ? anchor.startOff : 0, 0, sNode.length);
+    const eOff = clamp(eIdx === anchor.endIdx ? anchor.endOff : eNode.length, 0, eNode.length);
+
+    const range = document.createRange();
+    try {
+      range.setStart(sNode, sOff);
+      range.setEnd(sNode, sOff);
+      if (range.comparePoint(eNode, eOff) >= 0) {
+        range.setEnd(eNode, eOff);
+      } else {
+        range.setStart(eNode, eOff);
+        range.setEnd(sNode, sOff);
+      }
+    } catch (err) {
+      return null;
+    }
+
+    if (range.collapsed) {
+      try {
+        if (eOff < eNode.length) range.setEnd(eNode, eOff + 1);
+        else if (sOff > 0) range.setStart(sNode, sOff - 1);
+        else range.selectNodeContents(sDiv);
+      } catch (err) {
+        range.selectNodeContents(sDiv);
+      }
+    }
+    return range;
+  }
+
+  function placePdfMarker(note) {
+    const wrap = document.getElementById(`pdf-page-${note.position.page}`);
+    if (!wrap) return;
+    const anchor = locatePdfAnchor(wrap, note.position);
+    const range = anchor ? pdfRangeFromAnchor(wrap, anchor) : null;
+
+    const pageRect = wrap.getBoundingClientRect();
+    const rawTop = range ? range.getBoundingClientRect().top - pageRect.top : 6;
+    const top = avoidMarkerCollision(wrap, rawTop);
 
     const marker = document.createElement("div");
     marker.className = "note-marker" + (note.status === "done" ? " done" : "");
     marker.dataset.noteId = note.id;
     marker.title = note.note;
     marker.textContent = "●";
-    marker.style.left = "auto";
-    marker.style.right = "-22px";
-    marker.style.top = top + "px";
+    marker.style.top = (pageRect.height ? (top / pageRect.height) * 100 : 0) + "%";
     marker.addEventListener("click", (e) => {
       e.stopPropagation();
       const r = marker.getBoundingClientRect();
-      openEditPopover(r.left + window.scrollX - 310, r.top + window.scrollY, notesById[note.id]);
+      openEditPopover(notesById[note.id], { x: r.left - 312, y: r.top });
     });
-    pageWrap.style.position = "relative";
-    pageWrap.appendChild(marker);
+    wrap.appendChild(marker);
   }
 
   function highlightPdfPosition(position, scroll) {
-    const pageWrap = document.getElementById(`pdf-page-${position.page}`);
-    if (!pageWrap) return null;
-    const highlightLayer = pageWrap.querySelector(".pdf-highlight-layer");
-    const anchor = locatePdfAnchor(pageWrap, position);
+    const wrap = document.getElementById(`pdf-page-${position.page}`);
+    if (!wrap) return null;
+    const layer = wrap.querySelector(".pdf-highlight-layer");
+    const st = pdfPageState(wrap);
+    const anchor = locatePdfAnchor(wrap, position);
     const boxes = [];
+    let range = null;
 
-    if (anchor && highlightLayer) {
-      const pageRect = pageWrap.getBoundingClientRect();
-      const paragraphs = pageWrap.__mkParagraphs || [];
-      const anchorSpan = anchor.spans[anchor.start];
-      const para = paragraphs.find((p) => p.spans.includes(anchorSpan));
+    if (anchor) {
+      const para = paragraphForIndex(st.paragraphs, anchor.startIdx);
       if (para) {
-        para.lines.forEach((lineSpans) => {
-          const rects = lineSpans.map((s) => s.getBoundingClientRect());
+        const pageRect = wrap.getBoundingClientRect();
+        para.lines.forEach((lineIdxs) => {
+          const rects = lineIdxs
+            .map((i) => st.textDivs[i])
+            .filter((d) => d && d.isConnected)
+            .map((d) => d.getBoundingClientRect());
+          if (!rects.length) return;
           const box = boxFromRects(rects, pageRect, "pdf-highlight-box block");
-          highlightLayer.appendChild(box);
+          layer.appendChild(box);
           boxes.push(box);
         });
       }
-      for (let i = anchor.start; i <= anchor.end; i++) {
-        const span = anchor.spans[i];
-        if (!span) continue;
-        const box = boxFromRects([span.getBoundingClientRect()], pageRect, "pdf-highlight-box target");
-        highlightLayer.appendChild(box);
-        boxes.push(box);
-      }
+      range = pdfRangeFromAnchor(wrap, anchor);
+      if (range) boxes.push(...paintRangeBoxes(range, wrap, layer, "pdf-highlight-box target"));
+    } else {
+      wrap.classList.add("pdf-anchor-missing");
+      setTimeout(() => wrap.classList.remove("pdf-anchor-missing"), 1200);
     }
 
-    if (scroll) pageWrap.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (scroll) scrollIntoViewerCenter(range ? range.getBoundingClientRect() : wrap);
 
     return {
+      missing: !anchor,
       clear() {
         boxes.forEach((b) => b.remove());
+      },
+      anchorRect() {
+        const target = boxes.find((b) => b.classList.contains("target"));
+        return (target || wrap).getBoundingClientRect();
       },
     };
   }
@@ -1223,7 +1731,14 @@
       }
       const sel = window.getSelection();
       if (sel && sel.toString().trim().length > 0 && docPane.contains(sel.anchorNode)) {
-        handlePdfSelection(sel);
+        const anchor = anchorFromSelection(sel);
+        if (!anchor) return;
+        if (!anchor.crossPage) {
+          const key = `${anchor.startIdx}:${anchor.startOff}:${anchor.endIdx}:${anchor.endOff}:${anchor.text.length}`;
+          if (key === lastHandledSelectionKey) return;
+          lastHandledSelectionKey = key;
+        }
+        handlePdfSelection(sel, anchor);
       } else if (e.target.closest(".pdf-page-wrap") && !e.target.closest(".note-marker")) {
         handlePdfClick(e);
       }
@@ -1264,10 +1779,21 @@
   }
 
   window.MarkAIApplyExternalNotes = function (notes) {
+    const incoming = new Set(notes.map((n) => n.id));
     notes.forEach((n) => {
       const prior = notesById[n.id];
       notesById[n.id] = n;
-      if (prior && prior.status !== n.status) refreshMarkerState(n);
+      if (!prior) {
+        placeMarkerForNote(n);
+      } else if (prior.status !== n.status) {
+        refreshMarkerState(n);
+      }
+    });
+    Object.keys(notesById).forEach((id) => {
+      if (!incoming.has(id)) {
+        delete notesById[id];
+        document.querySelectorAll(`.note-marker[data-note-id="${id}"]`).forEach((m) => m.remove());
+      }
     });
     renderNoteList(Object.values(notesById));
   };
