@@ -11,11 +11,19 @@ the code alone. Update it when you make a structural change or fix something non
 
 ```bash
 cd MarkAI
-.venv/Scripts/python run.py    # http://localhost:5000, debug=True
+.venv/Scripts/python run.py    # http://localhost:5000, debug=True, data in ./data
 ```
 
-Deps: `Flask`, `python-docx`, `markdown` (see `requirements.txt`). `.venv` already exists; if not,
-`python -m venv .venv && .venv/Scripts/python -m pip install -r requirements.txt`.
+That's the *development* entry point and the one to use here: it pins the data dir to the repo's
+`data/` (sample documents live there) and runs the Flask reloader. The **shipped** entry point is
+`markai/cli.py` → the `markai` console script (`uvx markai`), which is a different beast: waitress
+instead of the dev server, port 8765 with a free-port fallback, `127.0.0.1` only, browser auto-open,
+and data under `platformdirs.user_data_dir("MarkAI")`. Changes to startup behaviour usually need to
+happen in both.
+
+Deps: `Flask`, `python-docx`, `markdown`, `platformdirs`, `waitress` — declared in `pyproject.toml`
+(`requirements.txt` is kept only as a convenience mirror). `.venv` already exists; if not,
+`python -m venv .venv && .venv/Scripts/python -m pip install -e .`.
 
 `.claude/launch.json` is configured for the `preview_start` tool (name `markai`, port 5000).
 **Flask's debug reloader spawns a child process that `preview_stop` doesn't always kill** — if you
@@ -30,8 +38,13 @@ paragraph) is the source of truth for what's actually shipped at any given momen
 ## Architecture
 
 ```
-app/
-  __init__.py       Flask app factory, config, blueprint registration
+pyproject.toml      packaging (hatchling), deps, the `markai` console script, PyPI metadata
+run.py              dev entry point (repo-local data dir, Flask reloader)
+tests/smoke_test.py stdlib end-to-end check, run against an *installed* MarkAI
+.github/workflows/  ci.yml (smoke test on 3 OSes) + publish.yml (tag -> PyPI, trusted publishing)
+markai/
+  __init__.py       Flask app factory, data dir resolution, per-install secret key
+  cli.py             `markai` console script: arg parsing, port choice, waitress, browser open
   db.py              sqlite3 connection (flask g) + schema (executescript, no migrations/ORM)
   auth.py            register/login/logout, session-based, login_required decorator + g.user
   documents.py       library CRUD, file upload/storage, serves parsed content or raw PDF bytes
@@ -45,15 +58,26 @@ app/
     util.py                shared slug/unique-id helper
   templates/          Jinja2, server-rendered (no SPA framework)
   static/css/app.css  hand-written, CSS custom properties, light+dark via prefers-color-scheme
+  static/vendor/pdfjs/  pdf.min.js + pdf.worker.min.js, vendored (NOT a CDN — see below)
   static/js/
     viewer.js          the big one — rendering, note CRUD, highlighting, PDF zoom/handling (~2000 lines)
     sync_poll.js        polls /documents/<id>/sync-status every 5s + wires the Refresh button
-data/                 gitignored: app.db (sqlite), uploads/<user_id>/<uuid>.<ext>
+data/                 gitignored: dev-only data dir (app.db, uploads/, secret_key)
 ```
 
+**Data lives outside the repo for installed users.** `create_app(data_dir=...)` decides where:
+explicit argument, else `MARKAI_DATA_DIR`, else the per-user platform dir. The Flask `SECRET_KEY` is
+generated once per install and stored as `<data_dir>/secret_key` — never hardcode a fallback there,
+a constant shipped inside a public package makes every install's session cookies forgeable.
+
 No ORM, no JS framework, no build step. PDF rendering/interaction is 100% client-side via **pdf.js
-loaded from cdnjs** (`3.11.174`, both `pdf.min.js` and `pdf.worker.min.js`) — zero Python PDF
-dependency; the server just streams the raw file bytes for PDFs.
+`3.11.174`, vendored under `markai/static/vendor/pdfjs/`** (both `pdf.min.js` and
+`pdf.worker.min.js`) — zero Python PDF dependency; the server just streams the raw file bytes for
+PDFs. It used to load from cdnjs; it doesn't any more, because a tool that promises your documents
+never leave the machine shouldn't need the network to open one, and an offline user got a dead
+viewer. `viewer.html` has the `<script>` tag, `viewer.js` reads the worker URL from
+`cfg.pdfWorkerUrl` (also set in `viewer.html`) — **both** must move together if the version is ever
+bumped, and `pyproject.toml`'s `artifacts` entry is what keeps the two files inside the wheel.
 
 **The PDF text layer uses pdf.js's own `pdfjsLib.renderTextLayer`/`updateTextLayer`** (both exported
 from the core `pdf.min.js` build already loaded — no extra CDN asset needed), not a hand-rolled span
@@ -304,7 +328,7 @@ toggled per event — they fire for every element the pointer crosses, so toggli
 type="file">` via `DataTransfer`, and then the ordinary multipart form is submitted — there is
 deliberately no separate fetch-based upload path to keep in sync with `documents.upload`.
 
-## The AI-resolve stub (`app/ai/`)
+## The AI-resolve stub (`markai/ai/`)
 
 The user wants an eventual in-app "Resolve with AI" feature (pick a provider — hosted API or local
 Ollama — and have MarkAI apply the fix directly, bypassing the export files). **This is intentionally
@@ -352,6 +376,25 @@ sample documents — see below for the login):
 7. A pre-existing note (created before this rewrite, i.e. no `char_base` in its `position_json`)
    still highlights correctly.
 8. Drag a selection from one page into the next → rejected with a toast, no note created.
+
+## Releasing
+
+`pyproject.toml` is the source of truth for metadata; the version is read from `markai/__init__.py`
+(`__version__`) by hatchling, so bump it there. Then:
+
+```bash
+git tag v0.1.1 && git push --tags
+```
+
+`.github/workflows/publish.yml` builds sdist + wheel, refuses to publish if the tag doesn't match
+`markai.__version__` (PyPI releases are permanent — a wrong number can't be taken back), runs
+`twine check` and the smoke test against the built wheel, then uploads via **PyPI Trusted Publishing**
+(OIDC, no API token stored anywhere). The one-time PyPI-side setup is a GitHub publisher on project
+`markai` for `follen99/MarkAI`, workflow `publish.yml`, environment `pypi`.
+
+`tests/smoke_test.py` deliberately imports `markai` rather than the source tree (it's run from
+`tests/`, so the *installed* package wins) — that's what makes it catch templates, CSS/JS or the
+vendored pdf.js being left out of the wheel, which is the packaging bug that actually happens.
 
 ## Things NOT done / deliberately deferred
 

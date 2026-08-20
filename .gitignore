@@ -1,6 +1,10 @@
 .venv/
 .claude/
 data/
-app/cache/
-app/__pycache__/
+__pycache__/
 *.pyc
+
+# packaging
+build/
+dist/
+*.egg-info/

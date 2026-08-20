@@ -95,22 +95,46 @@ The status file the agent writes back is just as small:
 
 ## Quick start
 
-Requires Python 3.10+.
+Requires Python 3.10+. With [uv](https://docs.astral.sh/uv/) installed, there is nothing to clone
+and nothing to set up:
 
 ```bash
-git clone <your-fork-url> MarkAI && cd MarkAI
-python -m venv .venv
-.venv/Scripts/python -m pip install -r requirements.txt   # Linux/macOS: .venv/bin/python
-.venv/Scripts/python run.py
+uvx markai
 ```
 
-Then open <http://localhost:5000>, register an account (local, stored in your own SQLite file) and
+That downloads MarkAI into a throwaway environment, starts it on <http://localhost:8765> and opens
+your browser. To keep it installed instead:
+
+```bash
+uv tool install markai     # or: pipx install markai
+markai
+```
+
+Register an account on first run — it is stored in your own SQLite file, on your own machine — and
 upload a document.
 
-Everything lives under `data/` (gitignored): `data/app.db` and `data/uploads/`. Deleting that
-directory resets the app.
+### Options
 
-Set `MARKAI_SECRET_KEY` in the environment before using this anywhere other than localhost.
+```
+markai --port 9000        # a specific port (fails loudly if it's taken)
+markai --data-dir ~/notes # where the database and uploads live
+markai --no-browser       # don't open a browser window
+```
+
+MarkAI binds to `127.0.0.1` only, so nothing outside your machine can reach it. Everything it stores
+lives in one directory — `%LOCALAPPDATA%\MarkAI` on Windows, `~/Library/Application Support/MarkAI`
+on macOS, `~/.local/share/MarkAI` on Linux — holding `app.db`, `uploads/` and a session key
+generated on first run. Delete that directory to reset the app; back it up to keep your notes.
+`MARKAI_DATA_DIR` overrides the location.
+
+### From a checkout
+
+```bash
+git clone https://github.com/follen99/MarkAI && cd MarkAI
+python -m venv .venv
+.venv/bin/python -m pip install -e .        # Windows: .venv/Scripts/python
+.venv/bin/python run.py                     # dev server on :5000, data in ./data
+```
 
 ## Using it with an AI agent
 
@@ -127,8 +151,9 @@ Set `MARKAI_SECRET_KEY` in the environment before using this anywhere other than
 
 Flask, SQLite (plain `sqlite3`, no ORM), server-rendered Jinja templates, and vanilla JS/CSS — no
 build step, no frontend framework. PDF rendering and interaction are entirely client-side via
-[pdf.js](https://mozilla.github.io/pdf.js/) (pinned to 3.11.174, loaded from a CDN); the server just
-streams the raw bytes. Markdown is parsed with `markdown`, DOCX with `python-docx`.
+[pdf.js](https://mozilla.github.io/pdf.js/) (3.11.174, **bundled with the package** rather than
+pulled from a CDN, so MarkAI works with no network at all); the server just streams the raw bytes.
+Markdown is parsed with `markdown`, DOCX with `python-docx`. Serving is handled by `waitress`.
 
 `CLAUDE.md` in the repository root is the deep architecture document — how notes are anchored, why
 the PDF text layer works the way it does, and which fallbacks are load-bearing. Read it before
@@ -138,10 +163,21 @@ changing anything non-trivial.
 
 This is a working single-user local tool, built to be deployable later but not deployed yet:
 
-- No CSRF protection, and AI-provider API keys are stored in plaintext. Fine on localhost, not fine
-  on a public host.
+- Built for `localhost`. There is no CSRF protection and AI-provider API keys are stored in
+  plaintext, so don't put this on a public host — `--host 0.0.0.0` exists but exposes your documents
+  to anyone who can reach the machine.
 - No password recovery and no email verification, by design.
 - The "Resolve with AI" button is an intentional stub (`app/ai/`): provider settings can be saved,
   but the in-app resolve endpoint returns 501. The export/agent loop above is the supported path.
 - Paragraph grouping in PDFs is a heuristic; unusual layouts (multi-column, tables) can group oddly.
 - Cross-page PDF selections are rejected rather than silently truncated.
+
+## Contributing
+
+`python tests/smoke_test.py` runs the end-to-end check (it installs nothing, but expects MarkAI to
+be installed — `pip install -e .` first). CI runs it on Linux, macOS and Windows against a freshly
+built wheel.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

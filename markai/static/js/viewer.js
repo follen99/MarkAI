@@ -2005,8 +2005,10 @@
 
   async function initPdf() {
     initZoomControls();
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    // Served from our own static dir, not a CDN: a tool whose whole point is that
+    // your documents never leave the machine shouldn't need the network to open
+    // one. Keep this in step with the <script> tag in viewer.html.
+    pdfjsLib.GlobalWorkerOptions.workerSrc = cfg.pdfWorkerUrl;
 
     pdfDoc = await pdfjsLib.getDocument(cfg.contentUrl).promise;
     const outline = (await pdfDoc.getOutline()) || [];

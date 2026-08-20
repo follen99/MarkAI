@@ -81,10 +81,11 @@
     syncStatusUrl: {{ url_for('notes.sync_status', document_id=document['id'])|tojson }},
     exportUrl: {{ url_for('notes.export_notes_download', document_id=document['id'])|tojson }},
     hasSourceFolderPath: {{ (document['source_folder'] or '')|tojson }},
+    pdfWorkerUrl: {{ url_for('static', filename='vendor/pdfjs/pdf.worker.min.js')|tojson }},
   };
 </script>
 {% if document['doc_type'] == 'pdf' %}
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="{{ url_for('static', filename='vendor/pdfjs/pdf.min.js') }}"></script>
 {% endif %}
 <script src="{{ url_for('static', filename='js/sync_poll.js') }}"></script>
 <script src="{{ url_for('static', filename='js/viewer.js') }}"></script>

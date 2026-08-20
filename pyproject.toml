@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "markai"
+dynamic = ["version"]
+description = "Annotate Markdown, PDF and DOCX documents locally and export the review as JSON an AI agent can apply."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Giuliano Ranauro" }]
+keywords = ["annotation", "pdf", "markdown", "docx", "review", "ai-agents", "self-hosted"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Framework :: Flask",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Text Processing :: Markup",
+]
+dependencies = [
+    "Flask>=3.0",
+    "python-docx>=1.1",
+    "markdown>=3.6",
+    "platformdirs>=4.0",
+    "waitress>=3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/follen99/MarkAI"
+Repository = "https://github.com/follen99/MarkAI"
+Issues = "https://github.com/follen99/MarkAI/issues"
+
+[project.scripts]
+markai = "markai.cli:main"
+
+[tool.hatch.version]
+path = "markai/__init__.py"
+
+# Templates, CSS/JS and the vendored pdf.js build are runtime assets, not just
+# repo files: without this they are left out of the wheel and the installed app
+# serves nothing.
+[tool.hatch.build.targets.wheel]
+packages = ["markai"]
+artifacts = ["markai/static/vendor/pdfjs/*.js"]
+
+[tool.hatch.build.targets.sdist]
+include = ["markai", "README.md", "CLAUDE.md", "LICENSE", "pyproject.toml"]
