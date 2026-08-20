@@ -46,7 +46,7 @@ app/
   templates/          Jinja2, server-rendered (no SPA framework)
   static/css/app.css  hand-written, CSS custom properties, light+dark via prefers-color-scheme
   static/js/
-    viewer.js          the big one — rendering, note CRUD, highlighting, PDF handling (~1800 lines)
+    viewer.js          the big one — rendering, note CRUD, highlighting, PDF zoom/handling (~2000 lines)
     sync_poll.js        polls /documents/<id>/sync-status every 5s + wires the Refresh button
 data/                 gitignored: app.db (sqlite), uploads/<user_id>/<uuid>.<ext>
 ```
@@ -188,8 +188,16 @@ Two files get written to a document's `source_folder` (if set) on every note mut
 — meant for an external AI agent to flip to `"done"` as it applies fixes). MarkAI reads the status
 file back via `check_and_pull_status()` — called before every note create/update (smart pre-mutation
 refresh), on manual Refresh click, and on a 5s poll (`sync_poll.js`) while a document is open. A
-manual one-off download (independent of source_folder) is available via the toolbar button →
-`GET /documents/<id>/notes/export`.
+manual one-off download (independent of source_folder) is available via the toolbar's
+"Export notes…" button, which opens a chooser (`openExportDialog` in `viewer.js`) rather than
+downloading straight away — the two shapes are not interchangeable and guessing was wrong half the
+time:
+- **Notes only** → `?format=notes`, the `<slug>.notes.json` above, on its own.
+- **Source-folder bundle** → `?format=bundle`, a zip of *both* files (notes + status), i.e. exactly
+  what a linked `source_folder` would receive, so the agent round-trip works without linking one.
+
+Both are built from the same `build_detailed_export` / `build_status_export` pair that
+`export_notes()` writes to disk, so a download can never drift from what the folder would contain.
 
 ## Routes
 
@@ -199,7 +207,7 @@ Viewer: `GET /documents/<id>/view`, `GET /documents/<id>/content` (parsed HTML+o
 md/docx, raw bytes for pdf).
 Notes: `GET|POST /documents/<id>/notes`, `PATCH|DELETE /notes/<id>`,
 `POST /documents/<id>/notes/bulk` (`{ids:[...], action: "done"|"pending"|"delete"}`, one transaction
-+ one export write), `GET /documents/<id>/notes/export` (manual download),
++ one export write), `GET /documents/<id>/notes/export?format=notes|bundle` (manual download),
 `GET /documents/<id>/sync-status` (poll).
 Settings (stub): `GET|POST /settings/ai-providers`, `DELETE /settings/ai-providers/<id>`,
 `POST /notes/<id>/resolve-ai` → always 501, not implemented.
@@ -218,26 +226,59 @@ Settings (stub): `GET|POST /settings/ai-providers`, `DELETE /settings/ai-provide
   creating a note anchored to a truncated, mismatched range — MarkAI doesn't support cross-page
   selections.
 - **Hold Ctrl/Cmd while clicking** → note-creation is suppressed entirely so links work normally.
-  This is documented in the UI itself (toolbar hint), not just here.
+  This is documented in the UI itself (toolbar hint), not just here. For links that point *into the
+  same document* (`href="#..."` — a markdown TOC, or any sidebar outline entry) "normally" cannot
+  mean the browser default: Ctrl-click would open a second copy of the whole viewer in a new tab, and
+  a plain click would scroll the page out from under the note popover it just opened. So
+  `navigateToFragment` handles them instead — Ctrl/Cmd+click jumps to the section inside
+  `#viewer-main`, a plain click navigates nowhere and just creates its note. Links to anywhere else
+  are untouched. The outline sidebar routes *every* click through the same helper (the `a.href` is
+  kept only so the row still reads as a link and shows a target on hover).
 - **Click elsewhere while a popover is open** → closes it, does *not* open a new one at the new spot
   (first click always just dismisses; a second, separate click starts a new note). This is a
   deliberate guard at the top of the `mouseup` handlers — don't remove it, it was a reported bug.
-- Two independently collapsible side panels: left = chapter/section outline (now a real collapsible
+- Two independently collapsible side panels: left = chapter/section outline (a real collapsible
   tree, built from the flat `{level, ...}` list via `buildOutlineTree` + `renderOutlineTree`, shared
   between md/docx and pdf), right = notes grouped by status (Pending/Done) with a "Select" mode for
-  bulk mark-done/mark-pending/delete.
-- PDF zoom re-renders **in place** (`updatePdfPageInPlace`/`updateAllPdfPagesInPlace`) rather than
-  tearing down and rebuilding all page-wrap elements — the earlier destroy/rebuild approach caused a
-  visible "reload" flash and reset scroll to page 1. It also no longer rebuilds the text layer on
-  zoom: it re-renders the canvas, updates `--scale-factor`, and asks pdf.js to rescale the *existing*
-  `textDivs` in place (`pdfjsLib.updateTextLayer(..., mustRescale:true)`) — `computeParagraphs`'
-  output stays valid across zoom without recomputation since it's derived from unscaled PDF units
-  (see `buildItemGeom`). Any in-flight canvas/text-layer render task is cancelled first
-  (`cancelPdfPageTasks`) so a superseded render can't keep writing to a page after a newer zoom
-  request started. A `pdfRenderToken` counter additionally guards against overlapping *page loops* if
-  zoom is clicked again before the previous full pass finishes. Scroll position is preserved via a
-  page-number + within-page-ratio snapshot (`getScrollState`/`restoreScrollState`), not just "scroll
-  to top of page N".
+  bulk mark-done/mark-pending/delete. **Every outline node with children starts `collapsed`** and a
+  "Collapse all" button (`collapseAllOutline`) re-closes the tree — on a real document the fully
+  expanded tree is unusable (the thesis sample is 207 rows expanded vs 11 chapters closed).
+- **PDF zoom is split into a synchronous layout pass and a lazy raster pass** (see the `----------
+  Zoom ----------` block in `viewer.js`) — this is the whole reason zoom feels instant, and it's easy
+  to accidentally undo. `setPdfZoom` does *only* cheap work inline: `pdfLayoutPage` on every page
+  (wrap width/height, `--scale-factor`, and the canvas's **CSS** size — the bitmap is left alone and
+  simply stretched by the browser), `restoreScrollState`, and `repaintPdfHighlight`. The expensive
+  canvas re-rasterization is deferred to a debounced pass (`schedulePdfRaster` → `refreshPdfRaster`)
+  that only touches pages within `PDF_RASTER_MARGIN` viewport-heights of the visible area, nearest
+  first; everything else stays marked dirty (`canvasScale !== pdfScale`) until `onPdfScroll` brings it
+  near the viewport. Before this, every zoom step re-rendered *all* pages sequentially before the
+  toolbar unfroze, which on a long PDF meant seconds of lag per click. Same split for text layers:
+  `ensurePageTextScaled` runs `pdfjsLib.updateTextLayer(..., mustRescale:true)` for near-viewport
+  pages only, and `placePdfMarker`/`highlightPdfPosition` call it on demand for whatever page they're
+  about to measure. Deferring it is safe because the text divs' left/top are percentages and their
+  font sizes are `calc(... * var(--scale-factor))`, so they follow the new scale by themselves;
+  `updateTextLayer` only re-derives the per-div `scaleX` correction. `computeParagraphs`' output
+  stays valid across zoom without recomputation since it's derived from unscaled PDF units (see
+  `buildItemGeom`).
+  - `rasterizePage` renders into a **detached** canvas and swaps it in when done — writing to the
+    live canvas would blank the page for the render's duration (assigning `canvas.width` clears the
+    bitmap), which was the visible white flash of the old zoom.
+  - It refuses to touch a page whose *first* render is still running (`st.initialRender`): cancelling
+    that would abort `renderPdfPage` before it ever builds the text layer, leaving a page with no
+    anchors. `initPdf` calls `schedulePdfRaster(0)` after the first pass so pages rendered at a scale
+    the user has since left get caught up.
+  - Markers are **not** re-placed on zoom (their `top` is a percentage of page height, so they track
+    it for free); the one active highlight is repainted from `activeHighlightPosition`, and each
+    page's hover state is reset via `st.clearHover` — without that, the mousemove handler's
+    "same text item as last time" short-circuit would suppress the hover highlight until the pointer
+    crossed into a different item.
+  - Scroll position is preserved via a page-number + within-page-ratio snapshot
+    (`getScrollState`/`restoreScrollState`), not just "scroll to top of page N".
+- Zoom UI (`initZoomControls`): `-` / `+` step to the next round multiple of 10%, the percentage
+  itself is a button that opens a popover with a fine-grained slider (40–400%, live `input` — it can
+  be live precisely *because* the layout pass is synchronous) plus Fit-width/50/100/150/200 presets,
+  and Ctrl/Cmd + wheel over the document zooms. `PDF_BASE_SCALE` (1.2) is the scale the UI calls
+  100%; `pdfScale` is always the raw pdf.js scale, never the percentage.
 - Markers are positioned at the actual anchor's pixel location (via `Range.getClientRects()` for
   md/docx, and — since the native text-layer rewrite — a real `Range` built from the resolved char
   offsets via `pdfRangeFromAnchor` for pdf), with simple vertical collision avoidance
@@ -252,6 +293,16 @@ Settings (stub): `GET|POST /settings/ai-providers`, `DELETE /settings/ai-provide
   the first time, notes that disappeared (deleted externally) get their marker removed. Previously it
   only toggled done/pending state on markers that already existed — a note created by an external
   agent while the document was open never got a marker until the page was reloaded.
+
+## Library upload (`library.html`)
+
+The upload form is a single centred card whose file input is visually hidden inside a `<label
+class="dropzone">` (so clicking anywhere in the zone opens the picker with no JS). Dropping a file
+anywhere in the window works too: `dragenter`/`dragleave` are counted with a **depth counter**, not
+toggled per event — they fire for every element the pointer crosses, so toggling directly makes the
+`.drop-overlay` flicker. A dropped file is validated by extension, assigned to the real `<input
+type="file">` via `DataTransfer`, and then the ordinary multipart form is submitted — there is
+deliberately no separate fetch-based upload path to keep in sync with `documents.upload`.
 
 ## The AI-resolve stub (`app/ai/`)
 
@@ -294,7 +345,10 @@ sample documents — see below for the login):
 5. Open a note from the right-hand list whose page isn't the current one → viewer jumps there,
    highlight is visible and centered, popover is fully on-screen.
 6. Zoom in/out with a note's popover open → highlight is still there and still correct afterward;
-   rapid zoom clicks produce no console errors.
+   rapid zoom clicks produce no console errors. Also: the page must resize *immediately* on each
+   click/slider drag (blurry-then-sharp is the intended behaviour, frozen-then-jump is the
+   regression), the slider must track the pointer while dragging on a long document, and pages
+   scrolled to afterwards must sharpen instead of staying stretched.
 7. A pre-existing note (created before this rewrite, i.e. no `char_base` in its `position_json`)
    still highlights correctly.
 8. Drag a selection from one page into the next → rejected with a toast, no note created.

@@ -1,24 +1,29 @@
 {% extends "base.html" %}
 {% block title %}Library · MarkAI{% endblock %}
 {% block content %}
-<h1>Your documents</h1>
-<p class="subtitle">Upload a .md, .pdf or .docx file to start annotating it.</p>
-
-<div class="card">
-  <form method="post" action="{{ url_for('documents.upload') }}" enctype="multipart/form-data">
-    <div class="upload-row">
-      <div class="field">
-        <label for="file">File (.md, .pdf, .docx)</label>
-        <input type="file" id="file" name="file" accept=".md,.markdown,.pdf,.docx" required>
-      </div>
-      <div class="field">
-        <label for="title">Title (optional)</label>
-        <input type="text" id="title" name="title" placeholder="Defaults to file name">
-      </div>
-      <button class="btn" type="submit">Upload</button>
-    </div>
-  </form>
+<div class="library-head">
+  <h1>Your documents</h1>
+  <p class="subtitle">Upload a .md, .pdf or .docx file to start annotating it.</p>
 </div>
+
+<form class="upload-card" id="upload-form" method="post" action="{{ url_for('documents.upload') }}" enctype="multipart/form-data">
+  <label class="dropzone" id="dropzone">
+    <input type="file" id="file" name="file" accept=".md,.markdown,.pdf,.docx" required>
+    <span class="dropzone-icon">
+      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+      </svg>
+    </span>
+    <span class="dropzone-title">Drag &amp; drop a document here</span>
+    <span class="dropzone-sub">or <u>browse your files</u> · .md, .pdf, .docx</span>
+    <span class="dropzone-file" id="dropzone-file" hidden><span></span></span>
+    <span class="dropzone-error" id="dropzone-error" hidden></span>
+  </label>
+  <div class="upload-meta">
+    <input type="text" id="title" name="title" placeholder="Title (optional) — defaults to the file name">
+    <button class="btn" type="submit">Upload</button>
+  </div>
+</form>
 
 {% if documents %}
 <div class="doc-grid">
@@ -42,6 +47,13 @@
 {% else %}
 <div class="empty-state">No documents yet. Upload one above to get started.</div>
 {% endif %}
+
+<div class="drop-overlay" id="drop-overlay" aria-hidden="true">
+  <div class="drop-overlay-inner">
+    <strong>Drop to upload the document</strong>
+    <span>.md, .pdf or .docx</span>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -81,5 +93,89 @@ async function deleteDoc(id, btn) {
   await fetch(`/documents/${id}`, {method: "DELETE"});
   btn.closest(".doc-card").remove();
 }
+
+// ---- Upload: file picker + whole-window drag & drop ----
+(function () {
+  const ACCEPTED = [".md", ".markdown", ".pdf", ".docx"];
+  const form = document.getElementById("upload-form");
+  const input = document.getElementById("file");
+  const overlay = document.getElementById("drop-overlay");
+  const chip = document.getElementById("dropzone-file");
+  const error = document.getElementById("dropzone-error");
+  // dragenter/dragleave fire for every element the pointer crosses, so track
+  // depth instead of toggling on each event — otherwise the overlay flickers
+  // as the cursor moves between children.
+  let dragDepth = 0;
+
+  function extensionOf(name) {
+    const dot = name.lastIndexOf(".");
+    return dot === -1 ? "" : name.slice(dot).toLowerCase();
+  }
+
+  function showError(message) {
+    error.textContent = message;
+    error.hidden = false;
+    chip.hidden = true;
+  }
+
+  function showFile(name) {
+    error.hidden = true;
+    chip.querySelector("span").textContent = name;
+    chip.hidden = false;
+  }
+
+  function draggingFiles(e) {
+    return Array.from(e.dataTransfer ? e.dataTransfer.types : []).includes("Files");
+  }
+
+  function hideOverlay() {
+    dragDepth = 0;
+    overlay.classList.remove("visible");
+  }
+
+  input.addEventListener("change", () => {
+    if (input.files.length) showFile(input.files[0].name);
+  });
+
+  window.addEventListener("dragenter", (e) => {
+    if (!draggingFiles(e)) return;
+    e.preventDefault();
+    dragDepth++;
+    overlay.classList.add("visible");
+  });
+
+  window.addEventListener("dragover", (e) => {
+    if (!draggingFiles(e)) return;
+    e.preventDefault(); // without this the browser just opens the dropped file
+    e.dataTransfer.dropEffect = "copy";
+  });
+
+  window.addEventListener("dragleave", (e) => {
+    if (!draggingFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) overlay.classList.remove("visible");
+  });
+
+  window.addEventListener("drop", (e) => {
+    if (!draggingFiles(e)) return;
+    e.preventDefault();
+    hideOverlay();
+
+    const file = e.dataTransfer.files[0];
+    if (!file) return;
+    if (!ACCEPTED.includes(extensionOf(file.name))) {
+      showError(`${file.name} isn't a supported file — use .md, .pdf or .docx.`);
+      return;
+    }
+
+    // Hand the dropped file to the form's own input so the normal multipart
+    // POST does the upload; no separate fetch path to keep in sync.
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    input.files = transfer.files;
+    showFile(file.name);
+    form.submit();
+  });
+})();
 </script>
 {% endblock %}

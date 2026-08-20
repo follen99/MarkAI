@@ -192,9 +192,95 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .doc-meta { color: var(--text-muted); font-size: 12.5px; }
 .doc-actions { display: flex; gap: 6px; margin-top: auto; flex-wrap: wrap; }
 
-.upload-row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
-.upload-row .field { flex: 1; min-width: 180px; }
-.upload-row input[type="file"] { margin-bottom: 0; }
+/* ---- Library upload ---- */
+
+.library-head { text-align: center; margin-bottom: 22px; }
+.library-head h1 { font-size: 24px; }
+.library-head p.subtitle { margin: 0; }
+
+.upload-card {
+  max-width: 620px;
+  margin: 0 auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 6px;
+  padding: 34px 24px;
+  border: 1.5px dashed var(--border);
+  border-radius: 12px;
+  background: var(--surface-alt);
+  cursor: pointer;
+  position: relative;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.dropzone:hover, .dropzone:focus-within { border-color: var(--accent); background: var(--accent-soft); }
+.dropzone input[type="file"] { position: absolute; width: 1px; height: 1px; opacity: 0; margin: 0; }
+.dropzone-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-soft);
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+.dropzone-title { font-weight: 600; font-size: 15px; }
+.dropzone-sub { color: var(--text-muted); font-size: 13px; }
+.dropzone-sub u { text-decoration: none; color: var(--accent); font-weight: 600; }
+.dropzone-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  max-width: 100%;
+}
+.dropzone-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dropzone-error { color: var(--danger); font-size: 13px; margin-top: 8px; }
+
+.upload-meta { display: flex; gap: 10px; align-items: center; margin-top: 14px; }
+.upload-meta input[type="text"] { margin-bottom: 0; }
+.upload-meta .btn { flex-shrink: 0; }
+
+/* Full-window drag target. Kept out of the flow until a drag actually starts,
+   so it can never swallow a click. */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  background: rgba(12, 13, 18, 0.55);
+  backdrop-filter: blur(2px);
+}
+.drop-overlay.visible { display: flex; }
+.drop-overlay-inner {
+  border: 2px dashed rgba(255, 255, 255, 0.7);
+  border-radius: 18px;
+  padding: 48px 64px;
+  text-align: center;
+  color: #fff;
+}
+.drop-overlay-inner strong { display: block; font-size: 20px; margin-bottom: 6px; }
+.drop-overlay-inner span { font-size: 14px; opacity: 0.8; }
 
 /* Viewer layout */
 .viewer-shell { display: flex; height: calc(100vh - 57px); }
@@ -246,6 +332,8 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
   color: var(--text-muted);
   margin: 0 0 8px;
 }
+
+.outline-tools { display: flex; justify-content: flex-end; margin-bottom: 8px; }
 
 .outline-list { list-style: none; margin: 0; padding: 0; }
 .outline-list .outline-list { padding-left: 14px; }
@@ -376,6 +464,111 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
   border-radius: 4px;
   padding: 1px 5px;
 }
+
+.toolbar-doc { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.toolbar-doc strong {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toolbar-actions { display: flex; align-items: center; gap: 10px; }
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+  color: var(--text);
+  cursor: pointer;
+}
+.icon-btn:hover { background: var(--border); text-decoration: none; }
+
+.zoom-control { position: relative; display: flex; align-items: center; gap: 4px; }
+.zoom-control[hidden] { display: none; }
+.zoom-value { min-width: 58px; justify-content: center; font-variant-numeric: tabular-nums; }
+
+.zoom-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 250px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  z-index: 30;
+}
+.zoom-popover[hidden] { display: none; }
+.zoom-popover-row { display: flex; align-items: center; gap: 10px; }
+.zoom-popover-row input[type="range"] { flex: 1; margin: 0; accent-color: var(--accent); }
+.zoom-popover-value {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  min-width: 42px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.zoom-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+/* ---- Modal ---- */
+
+.mk-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(12, 13, 18, 0.45);
+}
+.mk-modal {
+  width: 100%;
+  max-width: 470px;
+  padding: 22px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+}
+.mk-modal h2 { font-size: 18px; margin: 0 0 4px; }
+.mk-modal .hint { color: var(--text-muted); font-size: 13px; }
+.mk-modal code { font-size: 12px; }
+
+.export-option {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+  padding: 14px;
+  text-align: left;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-family: inherit;
+  cursor: pointer;
+}
+.export-option:hover { border-color: var(--accent); background: var(--accent-soft); }
+.export-option-title { display: block; font-weight: 600; font-size: 14.5px; margin-bottom: 4px; }
+.export-option-desc { display: block; font-size: 12.5px; color: var(--text-muted); line-height: 1.45; }
+.export-option code {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 11.5px;
+}
+.mk-modal-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
 
 .spinner {
   width: 14px;

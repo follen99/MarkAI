@@ -517,6 +517,28 @@
     });
   }
 
+  // Scrolls #viewer-main so el sits just below the top edge -- what you want
+  // for a heading, unlike scrollIntoViewerCenter (used for note highlights).
+  function scrollIntoViewerTop(el, margin) {
+    const containerRect = viewerMain.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
+    viewerMain.scrollTop += rect.top - containerRect.top - (margin === undefined ? 20 : margin);
+  }
+
+  // Same-document fragment links -- the sidebar outline, and any table of
+  // contents inside the document itself -- are resolved here instead of being
+  // left to the browser. The scroll container is #viewer-main, and a Ctrl/Cmd
+  // click (the "click links normally" modifier) on a fragment would otherwise
+  // open a whole second copy of the viewer in a new tab rather than jump.
+  function navigateToFragment(href) {
+    const id = decodeURIComponent((href || "").replace(/^#/, ""));
+    if (!id) return false;
+    const target = document.getElementById(id);
+    if (!target) return false;
+    scrollIntoViewerTop(target);
+    return true;
+  }
+
   // ---------- Collapsible outline tree (shared by md/docx and pdf) ----------
 
   function buildOutlineTree(entries) {
@@ -543,6 +565,9 @@
       row.className = "outline-row";
 
       if (node.children.length) {
+        // Chapters start closed: on a real document the fully expanded tree is
+        // hundreds of rows and the top-level chapters scroll out of reach.
+        li.classList.add("collapsed");
         const caret = document.createElement("button");
         caret.type = "button";
         caret.className = "outline-caret";
@@ -564,7 +589,14 @@
       a.className = `outline-lvl-${Math.min(node.level, 3)}`;
       a.textContent = opts.textFor(node);
       a.title = opts.textFor(node);
-      if (opts.onClick) a.addEventListener("click", (e) => opts.onClick(e, node));
+      a.addEventListener("click", (e) => {
+        // Always ours to handle, modifiers included -- the target is in this
+        // very page, so the browser's Ctrl-click "open in new tab" would just
+        // reload the viewer instead of jumping.
+        e.preventDefault();
+        if (opts.onClick) opts.onClick(e, node);
+        else navigateToFragment(a.getAttribute("href"));
+      });
       row.appendChild(a);
 
       li.appendChild(row);
@@ -592,6 +624,12 @@
       const path = stack.filter(Boolean);
       block.dataset.headingPath = JSON.stringify(path);
       block.dataset.chapter = path.length ? path[path.length - 1] : "";
+    });
+  }
+
+  function collapseAllOutline() {
+    outlineList.querySelectorAll(".outline-node").forEach((li) => {
+      if (li.querySelector(".outline-list")) li.classList.add("collapsed");
     });
   }
 
@@ -754,6 +792,17 @@
     computeHeadingPaths();
     buildOutlineSidebar(data.outline || []);
 
+    // A link into this same document (a markdown TOC, say): with Ctrl/Cmd it
+    // jumps to the section, without it nothing navigates at all -- so a plain
+    // click can create its note without the page sliding out from under the
+    // popover. Links to anywhere else are left entirely alone.
+    docPane.addEventListener("click", (e) => {
+      const link = e.target.closest('a[href^="#"]');
+      if (!link) return;
+      e.preventDefault();
+      if (e.ctrlKey || e.metaKey) navigateToFragment(link.getAttribute("href"));
+    });
+
     docPane.addEventListener("mouseup", (e) => {
       if (e.ctrlKey || e.metaKey) return;
       if (document.querySelector(".popover")) {
@@ -827,9 +876,11 @@
       hrefFor: (n) => `#pdf-page-${n.page}`,
       textFor: (n) => n.title,
       onClick: (e, n) => {
-        e.preventDefault();
         const target = document.getElementById(`pdf-page-${n.page}`);
-        if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+        // Instant, same as the md/docx side: a smooth scroll across a few
+        // hundred pages is a long janky ride, and the scroll event it ends on
+        // is what triggers rasterizing the pages you land on.
+        if (target) scrollIntoViewerTop(target, 8);
       },
     });
   }
@@ -849,6 +900,12 @@
         flatIndex: null,
         renderTask: null,
         textLayerTask: null,
+        page: null,           // PDFPageProxy, kept so zoom never has to await getPage
+        baseViewport: null,   // viewport at scale 1 — every zoom level clones from it
+        canvasScale: 0,       // scale the current canvas bitmap was rasterized at
+        textScale: 0,         // scale the text divs were last laid out at
+        initialRender: false, // first-pass render in flight; zoom must not cancel it
+        clearHover: null,     // set by attachPdfHoverHighlight, called on zoom
       };
     }
     return wrap.__mk;
@@ -929,6 +986,7 @@
     st.itemGeom = buildItemGeom(textContent.items, viewport);
     st.paragraphs = computeParagraphs(st.itemGeom);
     st.flatIndex = null;
+    st.textScale = viewport.scale;
   }
 
   // Same math pdf.js itself uses internally (src/display/text_layer.js,
@@ -1092,6 +1150,12 @@
       hoveredIdx = null;
     }
 
+    // Zoom wipes the whole highlight layer, hover boxes included; without a way
+    // to reset hoveredIdx from outside, the mousemove handler would treat the
+    // span under the cursor as "already hovered" and skip repainting until the
+    // pointer crossed into a different text item.
+    st.clearHover = clearHover;
+
     function paintHoverFor(idx) {
       clearHoverBoxes();
       const para = paragraphForIndex(st.paragraphs, idx);
@@ -1163,6 +1227,9 @@
     docPane.appendChild(wrap);
 
     const st = pdfPageState(wrap);
+    st.page = page;
+    st.baseViewport = page.getViewport({ scale: 1 });
+    st.initialRender = true;
     const canvas = wrap.querySelector("canvas");
     const dpr = window.devicePixelRatio || 1;
     const renderTask = page.render({
@@ -1171,11 +1238,22 @@
       transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null,
     });
     st.renderTask = renderTask;
-    await renderTask.promise;
-    st.renderTask = null;
-
-    await buildPdfTextLayer(page, viewport, wrap.querySelector(".pdf-text-layer"), wrap);
+    // initialRender stays set until the text layer exists too: buildPdfTextLayer
+    // starts by cancelling this page's tasks, which would kill a rasterizePage
+    // render that slipped in between the canvas and the text layer.
+    try {
+      await renderTask.promise;
+      st.renderTask = null;
+      st.canvasScale = viewport.scale;
+      await buildPdfTextLayer(page, viewport, wrap.querySelector(".pdf-text-layer"), wrap);
+    } finally {
+      st.initialRender = false;
+    }
     attachPdfHoverHighlight(wrap);
+    // Zoom may have moved while this page was rendering; resize it to match the
+    // pages that were already on screen. The debounced raster pass repaints the
+    // now-stale bitmap.
+    if (viewport.scale !== pdfScale) pdfLayoutPage(wrap);
     return wrap;
   }
 
@@ -1189,74 +1267,297 @@
     return token === pdfRenderToken;
   }
 
-  // Re-renders every page's canvas/text layer in place (no teardown of the
-  // page-wrap elements themselves), so the scrollable area never collapses
-  // back to zero height and the viewport doesn't visibly jump to the top
-  // while zooming.
-  // Re-renders the canvas in place and asks pdf.js to rescale the existing
-  // text divs (pdfjsLib.updateTextLayer) instead of rebuilding the text
-  // layer from scratch. Widths/heights are calc(var(--scale-factor)*...)
-  // already, so they track the new --scale-factor automatically; itemGeom
-  // and paragraphs are computed in unscaled units (see buildItemGeom) so
-  // they stay valid across zoom without recomputation either.
-  async function updatePdfPageInPlace(pageNum) {
-    const wrap = document.getElementById(`pdf-page-${pageNum}`);
-    if (!wrap) return renderPdfPage(pageNum);
+  // ---------- Zoom ----------
+  //
+  // Zooming used to re-rasterize every page's canvas sequentially and only give
+  // the UI back afterwards, so on a long PDF a single click on "+" froze the
+  // toolbar for seconds and pages visibly popped in one by one. It's now two
+  // separate passes:
+  //
+  //   1. a *synchronous layout* pass (pdfLayoutPage over every page) that
+  //      resizes the page wraps, updates --scale-factor and stretches the
+  //      existing canvas bitmaps with CSS. That alone is a complete, immediate
+  //      zoom at any page count -- just slightly soft on pages not yet
+  //      re-rasterized.
+  //   2. a *debounced raster* pass (refreshPdfRaster) that re-renders canvases
+  //      at the new scale, nearest-to-viewport first, leaving far-away pages
+  //      marked dirty (canvasScale !== pdfScale) for the scroll handler to pick
+  //      up when they approach the viewport.
+  //
+  // Text layers follow the same split. The divs' left/top are percentages and
+  // their font sizes are calc(... * var(--scale-factor)), so they track the new
+  // scale on their own the moment --scale-factor changes; updateTextLayer only
+  // re-derives the per-div scaleX correction, which is why deferring it to the
+  // same visible-first pass (ensurePageTextScaled) is safe.
 
-    cancelPdfPageTasks(wrap);
+  const PDF_BASE_SCALE = 1.2; // the scale the UI calls 100%
+  const PDF_MIN_SCALE = PDF_BASE_SCALE * 0.4;
+  const PDF_MAX_SCALE = PDF_BASE_SCALE * 4;
+  const PDF_RASTER_MARGIN = 1; // viewport-heights of look-ahead to rasterize
+
+  let rasterToken = 0;
+  let rasterTimer = null;
+  let scrollRasterFrame = null;
+
+  function pdfViewportFor(wrap) {
     const st = pdfPageState(wrap);
+    return st.baseViewport ? st.baseViewport.clone({ scale: pdfScale }) : null;
+  }
 
-    const page = await pdfDoc.getPage(pageNum);
-    const viewport = page.getViewport({ scale: pdfScale });
+  // Synchronous and cheap: no canvas work, no pdf.js call. Safe to run over
+  // every page of a 300-page document on each slider tick.
+  function pdfLayoutPage(wrap) {
+    const viewport = pdfViewportFor(wrap);
+    if (!viewport) return;
     const w = Math.floor(viewport.width);
     const h = Math.floor(viewport.height);
-
     wrap.style.width = w + "px";
     wrap.style.height = h + "px";
     wrap.style.setProperty("--scale-factor", pdfScale);
-
-    const dpr = window.devicePixelRatio || 1;
     const canvas = wrap.querySelector("canvas");
+    if (canvas) {
+      canvas.style.width = w + "px";
+      canvas.style.height = h + "px";
+    }
+  }
+
+  function ensurePageTextScaled(wrap) {
+    const st = pdfPageState(wrap);
+    if (!st.textDivs.length || st.textScale === pdfScale) return;
+    const viewport = pdfViewportFor(wrap);
+    if (!viewport) return;
+    pdfjsLib.updateTextLayer({
+      container: wrap.querySelector(".pdf-text-layer"),
+      viewport,
+      textDivs: st.textDivs,
+      textDivProperties: st.textDivProperties,
+      isOffscreenCanvasSupported: true,
+      mustRescale: true,
+      mustRotate: false,
+    });
+    st.textScale = pdfScale;
+  }
+
+  // Renders into a detached canvas and swaps it in when done. Rendering into the
+  // live one would blank the page for the duration of the render (assigning
+  // canvas.width clears the bitmap) -- that white flash was the most visible
+  // part of the old zoom.
+  async function rasterizePage(wrap) {
+    const st = pdfPageState(wrap);
+    if (!st.page || !st.baseViewport || st.canvasScale === pdfScale) return;
+    if (st.initialRender) return; // cancelling that would leave the page textless
+
+    const scale = pdfScale;
+    const viewport = st.baseViewport.clone({ scale });
+    const w = Math.floor(viewport.width);
+    const h = Math.floor(viewport.height);
+    const dpr = window.devicePixelRatio || 1;
+
+    const canvas = document.createElement("canvas");
     canvas.width = Math.floor(w * dpr);
     canvas.height = Math.floor(h * dpr);
     canvas.style.width = w + "px";
     canvas.style.height = h + "px";
 
-    const renderTask = page.render({
+    if (st.renderTask) {
+      try { st.renderTask.cancel(); } catch (err) { /* ignore */ }
+    }
+    const task = st.page.render({
       canvasContext: canvas.getContext("2d"),
       viewport,
       transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null,
     });
-    st.renderTask = renderTask;
-    await renderTask.promise;
-    st.renderTask = null;
-
-    if (st.textDivs.length) {
-      pdfjsLib.updateTextLayer({
-        container: wrap.querySelector(".pdf-text-layer"),
-        viewport,
-        textDivs: st.textDivs,
-        textDivProperties: st.textDivProperties,
-        isOffscreenCanvasSupported: true,
-        mustRescale: true,
-        mustRotate: false,
-      });
+    st.renderTask = task;
+    try {
+      await task.promise;
+    } catch (err) {
+      return; // cancelled by a newer zoom -- the old bitmap stays on screen
+    } finally {
+      if (st.renderTask === task) st.renderTask = null;
     }
+    if (scale !== pdfScale) return; // zoom moved on while this was rendering
 
-    wrap.querySelector(".pdf-highlight-layer").innerHTML = "";
-    wrap.querySelectorAll(".note-marker").forEach((m) => m.remove());
-    usedMarkerTops.delete(wrap);
-
-    return wrap;
+    const previous = wrap.querySelector("canvas");
+    if (previous) wrap.replaceChild(canvas, previous);
+    else wrap.insertBefore(canvas, wrap.firstChild);
+    st.canvasScale = scale;
   }
 
-  async function updateAllPdfPagesInPlace() {
-    const token = ++pdfRenderToken;
-    for (let i = 1; i <= pdfDoc.numPages; i++) {
-      if (token !== pdfRenderToken) return false;
-      await updatePdfPageInPlace(i);
+  // Pages within PDF_RASTER_MARGIN viewport-heights of the visible area,
+  // closest first.
+  function pdfPagesNearViewport() {
+    const containerRect = viewerMain.getBoundingClientRect();
+    const margin = containerRect.height * PDF_RASTER_MARGIN;
+    return Array.from(docPane.querySelectorAll(".pdf-page-wrap"))
+      .map((wrap) => {
+        const r = wrap.getBoundingClientRect();
+        const dist = Math.max(containerRect.top - r.bottom, r.top - containerRect.bottom, 0);
+        return { wrap, dist };
+      })
+      .filter((entry) => entry.dist <= margin)
+      .sort((a, b) => a.dist - b.dist)
+      .map((entry) => entry.wrap);
+  }
+
+  async function refreshPdfRaster() {
+    const token = ++rasterToken;
+    const wraps = pdfPagesNearViewport();
+    wraps.forEach(ensurePageTextScaled);
+    for (const wrap of wraps) {
+      if (token !== rasterToken) return;
+      await rasterizePage(wrap);
     }
-    return token === pdfRenderToken;
+  }
+
+  function schedulePdfRaster(delay) {
+    rasterToken++; // stop any in-flight pass; it is about to be superseded
+    clearTimeout(rasterTimer);
+    rasterTimer = setTimeout(refreshPdfRaster, delay === undefined ? 180 : delay);
+  }
+
+  // Catches pages scrolled into view while still carrying a stale bitmap.
+  function onPdfScroll() {
+    if (scrollRasterFrame) return;
+    scrollRasterFrame = requestAnimationFrame(() => {
+      scrollRasterFrame = null;
+      const stale = pdfPagesNearViewport().some((wrap) => {
+        const st = pdfPageState(wrap);
+        return st.canvasScale !== pdfScale || st.textScale !== pdfScale;
+      });
+      if (stale) schedulePdfRaster(120);
+    });
+  }
+
+  function repaintPdfHighlight() {
+    docPane.querySelectorAll(".pdf-page-wrap").forEach((wrap) => {
+      const st = wrap.__mk;
+      if (st && st.clearHover) st.clearHover();
+      const layer = wrap.querySelector(".pdf-highlight-layer");
+      if (layer && layer.firstChild) layer.textContent = "";
+    });
+    // The boxes those layers held are gone, so the handle is dead -- drop it
+    // before re-deriving the highlight from the position it was built from.
+    activeHighlight = null;
+    const position = activeHighlightPosition;
+    if (position) highlightPosition(position, { scroll: false });
+  }
+
+  function zoomPercent() {
+    return Math.round((pdfScale / PDF_BASE_SCALE) * 100);
+  }
+
+  const zoomUi = {}; // element handles, filled in by initZoomControls
+
+  function updateZoomUi() {
+    const percent = zoomPercent();
+    if (zoomUi.label) zoomUi.label.textContent = percent + "%";
+    if (zoomUi.slider) {
+      zoomUi.slider.value = String(
+        clamp(percent, parseInt(zoomUi.slider.min, 10), parseInt(zoomUi.slider.max, 10))
+      );
+    }
+    if (zoomUi.sliderValue) zoomUi.sliderValue.textContent = percent + "%";
+    if (zoomUi.in) zoomUi.in.disabled = pdfScale >= PDF_MAX_SCALE - 0.0005;
+    if (zoomUi.out) zoomUi.out.disabled = pdfScale <= PDF_MIN_SCALE + 0.0005;
+  }
+
+  function initZoomControls() {
+    const controls = document.getElementById("pdf-controls");
+    const popover = document.getElementById("zoom-popover");
+    zoomUi.label = document.getElementById("zoom-level");
+    zoomUi.slider = document.getElementById("zoom-slider");
+    zoomUi.sliderValue = document.getElementById("zoom-slider-value");
+    zoomUi.in = document.getElementById("zoom-in");
+    zoomUi.out = document.getElementById("zoom-out");
+    controls.hidden = false;
+
+    function closeZoomPopover() {
+      popover.hidden = true;
+      zoomUi.label.setAttribute("aria-expanded", "false");
+    }
+
+    zoomUi.in.addEventListener("click", () => stepZoom(1));
+    zoomUi.out.addEventListener("click", () => stepZoom(-1));
+    zoomUi.label.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const opening = popover.hidden;
+      popover.hidden = !opening;
+      zoomUi.label.setAttribute("aria-expanded", opening ? "true" : "false");
+    });
+
+    // Live: the layout half of a zoom is synchronous, so dragging the slider
+    // tracks the pointer instead of queueing up re-renders.
+    zoomUi.slider.addEventListener("input", () => {
+      setZoomPercent(parseInt(zoomUi.slider.value, 10));
+    });
+
+    popover.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-zoom]");
+      if (!btn) return;
+      if (btn.dataset.zoom === "fit") fitPdfWidth();
+      else setZoomPercent(parseInt(btn.dataset.zoom, 10));
+    });
+
+    document.addEventListener("click", (e) => {
+      if (!popover.hidden && !popover.contains(e.target)) closeZoomPopover();
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !popover.hidden) closeZoomPopover();
+    });
+
+    // Ctrl/Cmd + wheel, the gesture every other PDF reader uses.
+    viewerMain.addEventListener(
+      "wheel",
+      (e) => {
+        if (!e.ctrlKey && !e.metaKey) return;
+        e.preventDefault();
+        setPdfZoom(pdfScale * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+      },
+      { passive: false }
+    );
+
+    viewerMain.addEventListener("scroll", onPdfScroll, { passive: true });
+    updateZoomUi();
+  }
+
+  // The whole zoom, synchronously: relayout, keep the reading position, repaint
+  // the one active highlight, then hand the slow canvas work to a debounced
+  // pass. Markers are positioned as a percentage of page height (see
+  // placePdfMarker) so they need no repositioning at all here.
+  function setPdfZoom(nextScale) {
+    const scale = clamp(nextScale, PDF_MIN_SCALE, PDF_MAX_SCALE);
+    if (Math.abs(scale - pdfScale) < 0.0005) {
+      updateZoomUi();
+      return;
+    }
+    const scrollState = getScrollState();
+    pdfScale = scale;
+    docPane.querySelectorAll(".pdf-page-wrap").forEach(pdfLayoutPage);
+    restoreScrollState(scrollState);
+    repaintPdfHighlight();
+    updateZoomUi();
+    schedulePdfRaster();
+  }
+
+  function setZoomPercent(percent) {
+    setPdfZoom((percent / 100) * PDF_BASE_SCALE);
+  }
+
+  // Steps to the next round multiple of 10% so repeated clicks stay on a tidy
+  // sequence even after the slider has left it (135% -> 140% -> 150%).
+  function stepZoom(direction) {
+    const current = zoomPercent();
+    const next =
+      direction > 0 ? Math.floor(current / 10) * 10 + 10 : Math.ceil(current / 10) * 10 - 10;
+    setZoomPercent(next);
+  }
+
+  function fitPdfWidth() {
+    const wrap = docPane.querySelector(".pdf-page-wrap");
+    const st = wrap && wrap.__mk;
+    if (!st || !st.baseViewport) return;
+    const available = viewerMain.clientWidth - 32;
+    if (available > 0) setPdfZoom(available / st.baseViewport.width);
   }
 
   function getScrollState() {
@@ -1285,16 +1586,6 @@
     const containerRect = viewerMain.getBoundingClientRect();
     const desiredTop = containerRect.top + state.ratio * wrapRect.height;
     viewerMain.scrollTop += wrapRect.top - desiredTop;
-  }
-
-  async function rerenderPdfPreservingPosition() {
-    const scrollState = getScrollState();
-    const positionToRestore = activeHighlightPosition;
-    const finished = await updateAllPdfPagesInPlace();
-    if (!finished) return;
-    Object.values(notesById).forEach(placeMarkerForNote);
-    restoreScrollState(scrollState);
-    if (positionToRestore) highlightPosition(positionToRestore, { scroll: false });
   }
 
   function rectDistance(r, x, y) {
@@ -1644,6 +1935,7 @@
   function placePdfMarker(note) {
     const wrap = document.getElementById(`pdf-page-${note.position.page}`);
     if (!wrap) return;
+    ensurePageTextScaled(wrap); // the page may still be laid out at an older zoom
     const anchor = locatePdfAnchor(wrap, note.position);
     const range = anchor ? pdfRangeFromAnchor(wrap, anchor) : null;
 
@@ -1668,6 +1960,7 @@
   function highlightPdfPosition(position, scroll) {
     const wrap = document.getElementById(`pdf-page-${position.page}`);
     if (!wrap) return null;
+    ensurePageTextScaled(wrap); // ditto -- rects must come from the current scale
     const layer = wrap.querySelector(".pdf-highlight-layer");
     const st = pdfPageState(wrap);
     const anchor = locatePdfAnchor(wrap, position);
@@ -1711,8 +2004,7 @@
   }
 
   async function initPdf() {
-    const controls = document.getElementById("pdf-controls");
-    controls.style.display = "flex";
+    initZoomControls();
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
@@ -1722,6 +2014,7 @@
     buildOutlineSidebarPdf();
 
     await renderAllPdfPages();
+    schedulePdfRaster(0);
 
     docPane.addEventListener("mouseup", (e) => {
       if (e.ctrlKey || e.metaKey) return;
@@ -1748,27 +2041,81 @@
     notes.forEach(placeMarkerForNote);
     renderNoteList(notes);
 
-    const zoomIn = document.getElementById("zoom-in");
-    const zoomOut = document.getElementById("zoom-out");
-    const zoomLevel = document.getElementById("zoom-level");
+  }
 
-    async function applyZoom(delta) {
-      zoomIn.disabled = true;
-      zoomOut.disabled = true;
-      pdfScale = Math.min(3, Math.max(0.6, pdfScale + delta));
-      zoomLevel.textContent = Math.round((pdfScale / 1.2) * 100) + "%";
-      await rerenderPdfPreservingPosition();
-      zoomIn.disabled = false;
-      zoomOut.disabled = false;
-    }
+  // ---------- Export ----------
 
-    zoomIn.addEventListener("click", () => applyZoom(0.2));
-    zoomOut.addEventListener("click", () => applyZoom(-0.2));
+  // Two shapes are useful and they are not interchangeable, so ask rather than
+  // guess: the bare notes file, or the pair of files a linked source folder
+  // would receive (notes + the status file an agent writes "done" back into).
+  function openExportDialog() {
+    closeExportDialog();
+    const overlay = document.createElement("div");
+    overlay.className = "mk-modal-overlay";
+    overlay.innerHTML = `
+      <div class="mk-modal" role="dialog" aria-modal="true" aria-labelledby="export-modal-title">
+        <h2 id="export-modal-title">Export notes</h2>
+        <p class="hint">Choose what to download.</p>
+        <button class="export-option" type="button" data-format="notes">
+          <span class="export-option-title">Notes only</span>
+          <span class="export-option-desc">
+            A single JSON file with every note: text, status, section path and quote.
+          </span>
+          <code>.notes.json</code>
+        </button>
+        <button class="export-option" type="button" data-format="bundle">
+          <span class="export-option-title">Source-folder bundle</span>
+          <span class="export-option-desc">
+            A zip with the same notes file <em>plus</em> the status file — exactly what
+            MarkAI writes into a linked source folder, so an AI agent can mark notes
+            as done as it applies them.
+          </span>
+          <code>.zip — notes.json + notes_status.json</code>
+        </button>
+        ${
+          cfg.hasSourceFolder
+            ? `<p class="hint">Both files are already kept up to date in <code>${escapeHtml(
+                cfg.hasSourceFolderPath || ""
+              )}</code>.</p>`
+            : ""
+        }
+        <div class="mk-modal-actions">
+          <button class="btn secondary small" type="button" data-close>Cancel</button>
+        </div>
+      </div>`;
+
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay || e.target.closest("[data-close]")) {
+        closeExportDialog();
+        return;
+      }
+      const option = e.target.closest(".export-option");
+      if (!option) return;
+      window.location.href = `${cfg.exportUrl}?format=${option.dataset.format}`;
+      closeExportDialog();
+    });
+    document.addEventListener("keydown", exportEscHandler);
+    document.body.appendChild(overlay);
+  }
+
+  function exportEscHandler(e) {
+    if (e.key === "Escape") closeExportDialog();
+  }
+
+  function closeExportDialog() {
+    document.removeEventListener("keydown", exportEscHandler);
+    const existing = document.querySelector(".mk-modal-overlay");
+    if (existing) existing.remove();
   }
 
   // ---------- Boot ----------
 
   async function init() {
+    const exportBtn = document.getElementById("export-btn");
+    if (exportBtn) exportBtn.addEventListener("click", openExportDialog);
+    const collapseBtn = document.getElementById("outline-collapse-all");
+    if (collapseBtn) collapseBtn.addEventListener("click", collapseAllOutline);
+
     if (cfg.docType === "pdf") {
       await initPdf();
     } else {

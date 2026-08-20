@@ -1,11 +1,21 @@
+import io
 import json
 import uuid
+import zipfile
 
 from flask import Blueprint, Response, abort, g, jsonify, request
 
 from .auth import login_required
 from .db import get_db
-from .sync import build_detailed_export, check_and_pull_status, export_filename, export_notes
+from .sync import (
+    build_detailed_export,
+    build_status_export,
+    bundle_export_filename,
+    check_and_pull_status,
+    export_filename,
+    export_notes,
+    status_export_filename,
+)
 
 bp = Blueprint("notes", __name__)
 
@@ -171,11 +181,36 @@ def bulk_update_notes(document_id):
 @bp.route("/documents/<int:document_id>/notes/export", methods=("GET",))
 @login_required
 def export_notes_download(document_id):
+    """?format=notes (default) downloads just the notes file — the same JSON that
+    would be written as <slug>.notes.json. ?format=bundle downloads a zip with
+    that file *plus* the <slug>.notes_status.json companion, i.e. exactly what a
+    linked source folder would contain, for users who want the agent round-trip
+    without actually linking a folder."""
     db = get_db()
     doc = _get_document(document_id)
     check_and_pull_status(db, doc)
-    payload = build_detailed_export(db, doc)
-    body = json.dumps(payload, indent=2, ensure_ascii=False)
+    doc = _get_document(document_id)
+
+    detailed = build_detailed_export(db, doc)
+    fmt = (request.args.get("format") or "notes").lower()
+
+    if fmt == "bundle":
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(
+                export_filename(doc), json.dumps(detailed, indent=2, ensure_ascii=False)
+            )
+            zf.writestr(
+                status_export_filename(doc),
+                json.dumps(build_status_export(detailed), indent=2, ensure_ascii=False),
+            )
+        response = Response(buffer.getvalue(), mimetype="application/zip")
+        response.headers["Content-Disposition"] = (
+            f'attachment; filename="{bundle_export_filename(doc)}"'
+        )
+        return response
+
+    body = json.dumps(detailed, indent=2, ensure_ascii=False)
     response = Response(body, mimetype="application/json")
     response.headers["Content-Disposition"] = f'attachment; filename="{export_filename(doc)}"'
     return response

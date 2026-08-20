@@ -3,9 +3,12 @@
 
 {% block body %}
 <div class="viewer-toolbar">
-  <div>
+  <div class="toolbar-doc">
+    <a class="icon-btn" href="{{ url_for('documents.library') }}" title="Back to library" aria-label="Back to library">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </a>
     <strong>{{ document['title'] }}</strong>
-    <span class="doc-type-badge" style="margin-left:8px;">{{ document['doc_type'] }}</span>
+    <span class="doc-type-badge">{{ document['doc_type'] }}</span>
   </div>
   <div class="hint" id="sync-hint">
     {% if document['source_folder'] %}
@@ -17,12 +20,27 @@
     {% endif %}
   </div>
   <div class="hint">Click or select text to add a note · hold <kbd>Ctrl</kbd> to click links normally</div>
-  <div style="display:flex;align-items:center;gap:10px;">
-    <a class="btn secondary small" href="{{ url_for('notes.export_notes_download', document_id=document['id']) }}" download>Download notes (JSON)</a>
-    <div id="pdf-controls" style="display:none;gap:6px;align-items:center;">
-      <button class="btn secondary small" id="zoom-out">-</button>
-      <span class="hint" id="zoom-level">100%</span>
-      <button class="btn secondary small" id="zoom-in">+</button>
+  <div class="toolbar-actions">
+    <button class="btn secondary small" id="export-btn" type="button">Export notes…</button>
+    <div class="zoom-control" id="pdf-controls" hidden>
+      <button class="btn secondary small" id="zoom-out" type="button" title="Zoom out">&minus;</button>
+      <button class="btn secondary small zoom-value" id="zoom-level" type="button"
+              aria-haspopup="dialog" aria-expanded="false" title="Set zoom level">100%</button>
+      <button class="btn secondary small" id="zoom-in" type="button" title="Zoom in">+</button>
+      <div class="zoom-popover" id="zoom-popover" role="dialog" aria-label="Zoom" hidden>
+        <div class="zoom-popover-row">
+          <input type="range" id="zoom-slider" min="40" max="400" step="5" value="100"
+                 aria-label="Zoom level">
+          <span class="zoom-popover-value" id="zoom-slider-value">100%</span>
+        </div>
+        <div class="zoom-presets">
+          <button class="btn secondary small" type="button" data-zoom="fit">Fit width</button>
+          <button class="btn secondary small" type="button" data-zoom="50">50%</button>
+          <button class="btn secondary small" type="button" data-zoom="100">100%</button>
+          <button class="btn secondary small" type="button" data-zoom="150">150%</button>
+          <button class="btn secondary small" type="button" data-zoom="200">200%</button>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -31,6 +49,10 @@
   <div class="sidebar-panel left" id="outline-panel">
     <button class="sidebar-toggle" type="button" data-toggle="outline-panel" title="Collapse chapters">Chapters «</button>
     <div class="sidebar-inner">
+      <div class="outline-tools">
+        <button class="btn secondary small" id="outline-collapse-all" type="button"
+                title="Collapse every open chapter">Collapse all</button>
+      </div>
       <ul class="outline-list" id="outline-list"><li class="hint">Loading…</li></ul>
     </div>
   </div>
@@ -57,6 +79,8 @@
     contentUrl: {{ url_for('documents.content', document_id=document['id'])|tojson }},
     notesUrl: {{ url_for('notes.list_notes', document_id=document['id'])|tojson }},
     syncStatusUrl: {{ url_for('notes.sync_status', document_id=document['id'])|tojson }},
+    exportUrl: {{ url_for('notes.export_notes_download', document_id=document['id'])|tojson }},
+    hasSourceFolderPath: {{ (document['source_folder'] or '')|tojson }},
   };
 </script>
 {% if document['doc_type'] == 'pdf' %}

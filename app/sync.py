@@ -39,6 +39,14 @@ def export_filename(document) -> str:
     return f"{_slug_for(document)}.notes.json"
 
 
+def status_export_filename(document) -> str:
+    return f"{_slug_for(document)}.notes_status.json"
+
+
+def bundle_export_filename(document) -> str:
+    return f"{_slug_for(document)}.notes-bundle.zip"
+
+
 def _words(text, n, from_end=False):
     words = (text or "").split()
     return " ".join(words[-n:] if from_end else words[:n])
@@ -84,6 +92,19 @@ def build_detailed_export(db, document):
     return {"document": document["title"], "notes": result}
 
 
+def build_status_export(detailed):
+    """The companion status file: just id/status pairs plus the one-line contract
+    an external agent needs. Derived from an already-built detailed export so the
+    two files can never disagree about which notes exist."""
+    return {
+        "instructions": (
+            "For each note you have applied to the source, set its status to "
+            "'done'. MarkAI reads this file back and reflects the status in its UI."
+        ),
+        "notes": [{"id": n["id"], "status": n["status"]} for n in detailed["notes"]],
+    }
+
+
 def export_notes(db, document):
     """Write the full notes file and the short status file into the document's
     source folder, if one is configured. Called after any note mutation."""
@@ -91,13 +112,7 @@ def export_notes(db, document):
         return
 
     detailed = build_detailed_export(db, document)
-    status_list = {
-        "instructions": (
-            "For each note you have applied to the source, set its status to "
-            "'done'. MarkAI reads this file back and reflects the status in its UI."
-        ),
-        "notes": [{"id": n["id"], "status": n["status"]} for n in detailed["notes"]],
-    }
+    status_list = build_status_export(detailed)
 
     os.makedirs(document["source_folder"], exist_ok=True)
     _atomic_write_json(notes_file_path(document), detailed)
